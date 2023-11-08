@@ -1,0 +1,23 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net8.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <Optimize>true</Optimize>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        <PublishAot>true</PublishAot>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="AWSSDK.S3" Version="3.7.305.17" />
+        <PackageReference Include="Spectre.Console" Version="0.47.0"/>
+        <PackageReference Include="System.IO.Hashing" Version="8.0.0"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\PatchSync.Common\PatchSync.Common.csproj"/>
+        <ProjectReference Include="..\PatchSync.SDK\PatchSync.SDK.csproj"/>
+    </ItemGroup>
+</Project>
