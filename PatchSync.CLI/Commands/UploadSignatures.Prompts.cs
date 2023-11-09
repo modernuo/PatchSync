@@ -106,6 +106,87 @@ public partial class UploadSignatures
       : endpointOrRegion;
   }
   
+  private static string GetDigitalOceanRegion()
+  {
+    var endpointOrRegion = AnsiConsole.Prompt(
+      new TextPrompt<string>("Please specify your Digital Ocean [green]endpoint[/] or [green]region[/]:")
+        .DefaultValue("nyc3")
+        .ShowDefaultValue(true)
+        .PromptStyle("blue")
+        .Validate(endpointUrl =>
+        {
+          // nyc3.digitaloceanspaces.com
+          if (string.IsNullOrWhiteSpace(endpointUrl))
+          {
+            return ValidationResult.Error("[red]You must specify a valid endpoint url or region.[/]");
+          }
+
+          if (!endpointUrl.EndsWith("digitaloceanspaces.com"))
+          {
+            return ValidationResult.Error("[red]You must specify a valid endpoint url or region.[/]");
+          }
+
+          return ValidationResult.Success();
+        }));
+
+    return endpointOrRegion.EndsWith("digitaloceanspaces.com")
+      ? new Uri(endpointOrRegion).Host.Split('.')[0]
+      : endpointOrRegion;
+  }
+  
+  private static string GetLinodeRegion()
+  {
+    var endpointOrRegion = AnsiConsole.Prompt(
+      new TextPrompt<string>("Please specify your Linode [green]endpoint[/] or [green]region[/]:")
+        .DefaultValue("us-east-1")
+        .ShowDefaultValue(true)
+        .PromptStyle("blue")
+        .Validate(endpointUrl =>
+        {
+          // us-east-1.linodeobjects.com
+          if (string.IsNullOrWhiteSpace(endpointUrl))
+          {
+            return ValidationResult.Error("[red]You must specify a valid endpoint url or region.[/]");
+          }
+
+          if (!endpointUrl.EndsWith("linodeobjects.com"))
+          {
+            return ValidationResult.Error("[red]You must specify a valid endpoint url or region.[/]");
+          }
+
+          return ValidationResult.Success();
+        }));
+
+    return endpointOrRegion.EndsWith("linodeobjects.com")
+      ? new Uri(endpointOrRegion).Host.Split('.')[0]
+      : endpointOrRegion;
+  }
+  
+  private static string GetGenericEndpoint()
+  {
+    var endpointOrRegion = AnsiConsole.Prompt(
+      new TextPrompt<string>("Please specify your S3 compatible storage provider [green]endpoint[/]:")
+        .PromptStyle("blue")
+        .Validate(endpointUrl =>
+        {
+          if (string.IsNullOrWhiteSpace(endpointUrl))
+          {
+            return ValidationResult.Error("[red]You must specify a valid endpoint url or region.[/]");
+          }
+
+          if (!Uri.TryCreate(endpointUrl, UriKind.Absolute, out _))
+          {
+            return ValidationResult.Error("[red]You must specify a valid endpoint url or region.[/]");
+          }
+
+          return ValidationResult.Success();
+        }));
+
+    return endpointOrRegion.EndsWith("linodeobjects.com")
+      ? new Uri(endpointOrRegion).Host.Split('.')[0]
+      : endpointOrRegion;
+  }
+  
   private static string GetBucket()
   {
     return AnsiConsole.Prompt(

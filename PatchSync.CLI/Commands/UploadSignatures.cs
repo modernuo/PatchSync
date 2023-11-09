@@ -32,9 +32,13 @@ public partial class UploadSignatures : ICommand
       var provider = GetUploadProvider();
       endpointUrl = provider switch
       {
-        UploadProvider.CloudFlare => $"https://{GetCloudFlareAccountId()}.r2.cloudflarestorage.com",
-        UploadProvider.BackBlaze  => $"https://s3.{GetBackBlazeRegion()}.backblazeb2.com",
-        _                         => null
+        UploadProvider.BackBlaze    => $"https://s3.{GetBackBlazeRegion()}.backblazeb2.com",
+        UploadProvider.CloudFlare   => $"https://{GetCloudFlareAccountId()}.r2.cloudflarestorage.com",
+        UploadProvider.DigitalOcean => $"https://{GetDigitalOceanRegion()}.digitaloceanspaces.com",
+        UploadProvider.Google       => "https://storage.googleapis.com",
+        UploadProvider.Linode       => $"https://{GetLinodeRegion()}.linodeobjects.com",
+        UploadProvider.Other        => GetGenericEndpoint(),
+        _                           => null
       };
       
       var bucket = GetBucket();

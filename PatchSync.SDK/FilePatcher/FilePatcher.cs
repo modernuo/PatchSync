@@ -1,4 +1,4 @@
-namespace PatchSync.SDK.FilePatcher;
+namespace PatchSync.SDK;
 
 public class FilePatcher
 {

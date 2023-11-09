@@ -1,10 +1,8 @@
-using System.Runtime.InteropServices;
-
 namespace PatchSync.Common.Signatures;
 
-[StructLayout(LayoutKind.Sequential)]
-public struct SignatureChunk
+public struct SignatureChunk(uint rollingHash, ulong hash)
 {
-  public uint RollingHash;
-  public ulong Hash;
+  public uint RollingHash = rollingHash;
+
+  public ulong Hash = hash;
 }

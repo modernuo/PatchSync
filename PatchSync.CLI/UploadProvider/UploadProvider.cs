@@ -2,7 +2,11 @@ namespace PatchSync.CLI;
 
 public enum UploadProvider
 {
+  Other,
+  Amazon,
+  BackBlaze,
   CloudFlare,
-  AWS,
-  BackBlaze
+  DigitalOcean,
+  Google,
+  Linode
 }

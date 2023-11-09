@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using PatchSync.CLI.Json;
 using PatchSync.Common.Manifest;
 using PatchSync.Manifest;

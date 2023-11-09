@@ -18,5 +18,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\PatchSync.Common\PatchSync.Common.csproj" />
+    <ProjectReference Include="..\PatchSync.SDK\PatchSync.SDK.csproj" />
   </ItemGroup>
 </Project>
