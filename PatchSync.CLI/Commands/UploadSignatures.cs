@@ -54,7 +54,9 @@ public partial class UploadSignatures : ICommand
     AWSCredentials credentials;
     try
     {
+      AnsiConsole.MarkupLine("[green]Attempting to retrieve S3-compatible credentials...[/]");
       credentials = FallbackCredentialsFactory.GetCredentials();
+      _ = credentials.GetCredentials(); // Will throw if no credentials are configured
     }
     catch
     {

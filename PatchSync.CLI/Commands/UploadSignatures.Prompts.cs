@@ -241,11 +241,11 @@ public partial class UploadSignatures
   
   private static BasicAWSCredentials PromptMissingCredentials()
   {
-    AnsiConsole.WriteLine("[red]Error:[/] Could not find your S3-compatible credentials.");
-    AnsiConsole.WriteLine("To store your credentials securely consult this AWS credential files settings page:");
-    AnsiConsole.WriteLine("- [green]https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html[/]");
     AnsiConsole.WriteLine("");
-    AnsiConsole.WriteLine("You may type in your access key id and secret, but it will not be revealed, cached, or stored.");
+    AnsiConsole.MarkupLine("[red]Error:[/] Could not find your S3-compatible credentials.");
+    AnsiConsole.MarkupLine("To store your credentials securely consult this AWS credential files settings page:");
+    AnsiConsole.MarkupLine("- [green]https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html[/]");
+    AnsiConsole.WriteLine("");
     
     var accessKey = AnsiConsole.Prompt(
       new TextPrompt<string>("Please specify your [green]access key[/]:")
