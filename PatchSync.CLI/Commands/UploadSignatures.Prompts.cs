@@ -1,3 +1,4 @@
+using Amazon.Runtime;
 using Spectre.Console;
 
 namespace PatchSync.CLI.Commands;
@@ -236,5 +237,43 @@ public partial class UploadSignatures
         DefaultValue = true
       }
     );
+  }
+  
+  private static BasicAWSCredentials PromptMissingCredentials()
+  {
+    AnsiConsole.WriteLine("[red]Error:[/] Could not find your S3-compatible credentials.");
+    AnsiConsole.WriteLine("To store your credentials securely consult this AWS credential files settings page:");
+    AnsiConsole.WriteLine("- [green]https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html[/]");
+    AnsiConsole.WriteLine("");
+    AnsiConsole.WriteLine("You may type in your access key id and secret, but it will not be revealed, cached, or stored.");
+    
+    var accessKey = AnsiConsole.Prompt(
+      new TextPrompt<string>("Please specify your [green]access key[/]:")
+        .PromptStyle("blue")
+        .Validate(path =>
+        {
+          if (string.IsNullOrWhiteSpace(path))
+          {
+            return ValidationResult.Error("[red]You must specify a valid access key.[/]");
+          }
+
+          return ValidationResult.Success();
+        }));
+    
+    var secretKey = AnsiConsole.Prompt(
+      new TextPrompt<string>("Please specify your [green]secretKey[/] (not stored):")
+        .PromptStyle("orange")
+        .Secret('\u25cf') // center circle character
+        .Validate(path =>
+        {
+          if (string.IsNullOrWhiteSpace(path))
+          {
+            return ValidationResult.Error("[red]You must specify a valid secret key.[/]");
+          }
+
+          return ValidationResult.Success();
+        }));
+
+    return new BasicAWSCredentials(accessKey, secretKey);
   }
 }

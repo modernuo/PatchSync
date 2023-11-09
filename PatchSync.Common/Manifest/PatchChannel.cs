@@ -1,4 +1,4 @@
-namespace PatchSync.Manifest;
+namespace PatchSync.Common.Manifest;
 
 public enum PatchChannel
 {

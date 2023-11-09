@@ -1,9 +1,8 @@
 namespace PatchSync.SDK;
 
-public enum SignatureFileStatus
+public enum SignatureFileStatus : byte
 {
   Started,
   InProgress,
-  Completed,
-  Error
+  Completed
 }

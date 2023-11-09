@@ -1,4 +1,4 @@
-using PatchSync.Manifest;
+using PatchSync.Common.Manifest;
 using Spectre.Console;
 
 namespace PatchSync.CLI.Commands;

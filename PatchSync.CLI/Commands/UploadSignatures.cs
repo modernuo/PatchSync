@@ -1,3 +1,4 @@
+using Amazon.Runtime;
 using Amazon.S3;
 using PatchSync.Common.Manifest;
 using Spectre.Console;
@@ -24,13 +25,16 @@ public partial class UploadSignatures : ICommand
       manifestPath = GetInputFolder();
     }
 
+    var endpointFromEnvironment = Environment.GetEnvironmentVariable("AWS_ENDPOINT_URL");
+
     bool agreed;
     string? endpointUrl;
     do
     {
       AnsiConsole.Clear();
-      var provider = GetUploadProvider();
-      endpointUrl = provider switch
+      
+      // Use the endpoint from AWS environment variables, otherwise prompt
+      endpointUrl = endpointFromEnvironment ?? GetUploadProvider() switch
       {
         UploadProvider.BackBlaze    => $"https://s3.{GetBackBlazeRegion()}.backblazeb2.com",
         UploadProvider.CloudFlare   => $"https://{GetCloudFlareAccountId()}.r2.cloudflarestorage.com",
@@ -45,8 +49,19 @@ public partial class UploadSignatures : ICommand
       var path = GetBasePath();
       agreed = PromptLooksCorrect(endpointUrl, bucket, path);
     } while (!agreed);
+
+
+    AWSCredentials credentials;
+    try
+    {
+      credentials = FallbackCredentialsFactory.GetCredentials();
+    }
+    catch
+    {
+      credentials = PromptMissingCredentials();
+    }
     
-    var s3Client = new AmazonS3Client(new AmazonS3Config
+    var s3Client = new AmazonS3Client(credentials, new AmazonS3Config
     {
       ServiceURL = endpointUrl
     });

@@ -1,11 +1,10 @@
 namespace PatchSync.SDK;
 
-public record SignatureFileResult
+public struct SignatureFileResult
 {
   public SignatureFileStatus Status { get; private init; }
   public long BytesTotal { get; private init; }
   public long BytesProcessed { get; private init; }
-  public string? Message { get; private init; }
   
   public static SignatureFileResult Started(long bytesTotal) => new()
   {
@@ -14,10 +13,9 @@ public record SignatureFileResult
     BytesProcessed = 0
   };
   
-  public static SignatureFileResult InProgress(long bytesTotal, long bytesProcessed, string? message = null) => new()
+  public static SignatureFileResult InProgress(long bytesTotal, long bytesProcessed) => new()
   {
     Status = SignatureFileStatus.InProgress,
-    Message = message,
     BytesProcessed = bytesProcessed
   };
   
@@ -25,14 +23,4 @@ public record SignatureFileResult
   {
     Status = SignatureFileStatus.Completed
   };
-  
-  public static SignatureFileResult Error(string? message = null) => new()
-  {
-    Status = SignatureFileStatus.Error,
-    Message = message
-  };
-  
-  private SignatureFileResult()
-  {
-  }
 }

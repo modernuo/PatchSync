@@ -1,4 +1,4 @@
-namespace PatchSync.Hashing;
+namespace PatchSync.Common.Hashing;
 
 public sealed class Adler32RollingChecksum
 {

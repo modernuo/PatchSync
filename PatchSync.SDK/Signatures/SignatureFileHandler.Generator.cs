@@ -1,7 +1,7 @@
 using System.IO.Hashing;
 using System.Runtime.CompilerServices;
+using PatchSync.Common.Hashing;
 using PatchSync.Common.Signatures;
-using PatchSync.Hashing;
 
 namespace PatchSync.SDK.Signatures;
 

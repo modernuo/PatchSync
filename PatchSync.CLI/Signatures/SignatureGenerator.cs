@@ -29,7 +29,6 @@ public class SignatureGenerator
             task.Increment(signatureResult.BytesProcessed);
             break;
           }
-        case SignatureFileStatus.Error:
         case SignatureFileStatus.Completed:
           {
             task.StopTask();
