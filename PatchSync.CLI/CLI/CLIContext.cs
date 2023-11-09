@@ -17,5 +17,5 @@ public class CLIContext
   }
 
   public void SetProperty<T>(string key, T? value) =>
-    _context[key] = value;
+    _context[key] = value!;
 }

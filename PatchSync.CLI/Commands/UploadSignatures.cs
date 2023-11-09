@@ -50,6 +50,7 @@ public partial class UploadSignatures : ICommand
       agreed = PromptLooksCorrect(endpointUrl, bucket, path);
     } while (!agreed);
 
+    AnsiConsole.WriteLine("");
 
     AWSCredentials credentials;
     try
@@ -62,10 +63,9 @@ public partial class UploadSignatures : ICommand
     {
       credentials = PromptMissingCredentials();
     }
-    
-    var s3Client = new AmazonS3Client(credentials, new AmazonS3Config
-    {
-      ServiceURL = endpointUrl
-    });
+
+    var s3Client = endpointUrl == null
+      ? new AmazonS3Client(credentials)
+      : new AmazonS3Client(credentials, new AmazonS3Config { ServiceURL = endpointUrl });
   }
 }

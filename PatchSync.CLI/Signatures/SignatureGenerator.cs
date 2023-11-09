@@ -5,7 +5,7 @@ using Spectre.Console;
 
 namespace PatchSync.Signatures;
 
-public class SignatureGenerator
+public static class SignatureGenerator
 {
   public static ulong GenerateSignature(string filePath, string signaturePath, int chunkSize, ProgressTask? task)
   {
@@ -21,22 +21,22 @@ public class SignatureGenerator
       {
         case SignatureFileStatus.Started:
           {
-            task.MaxValue(fileSize).StartTask();
+            task!.MaxValue(fileSize).StartTask();
             break;
           }
         case SignatureFileStatus.InProgress:
           {
-            task.Increment(signatureResult.BytesProcessed);
+            task!.Increment(signatureResult.BytesProcessed);
             break;
           }
         case SignatureFileStatus.Completed:
           {
-            task.StopTask();
+            task!.StopTask();
             break;
           }
         default:
           {
-            throw new ArgumentOutOfRangeException();
+            throw new ArgumentOutOfRangeException(nameof(signatureResult));
           }
       };
     });

@@ -47,18 +47,25 @@ public partial class UploadSignatures
   {
     var value = AnsiConsole.Prompt(
       new SelectionPrompt<UploadProvider>()
-        .Title("Select your [green]hosting provider[/]:")
+        .Title("Select the [green]hosting provider[/]:")
         .AddChoices(Enum.GetValues<UploadProvider>())
     );
     
-    AnsiConsole.MarkupLineInterpolated($"Select your [green]hosting provider[/]: [blue]{value}[/]");
+    AnsiConsole.MarkupLineInterpolated($"Select the [green]hosting provider[/]: [blue]{value}[/]");
     return value;
   }
 
   private static string GetCloudFlareAccountId()
   {
+    var accountId = Environment.GetEnvironmentVariable("API_ACCOUNT_ID");
+    if (accountId != null)
+    {
+      AnsiConsole.MarkupLineInterpolated($"Cloudflare Account ID: [blue]{accountId}[/]");
+      return accountId;
+    }
+    
     return AnsiConsole.Prompt(
-      new TextPrompt<string>("Please specify your [green]CloudFlare Account ID[/]:")
+      new TextPrompt<string>("Please specify the [green]CloudFlare Account ID[/]:")
         .PromptStyle("blue")
         .Validate(accountId =>
         {
@@ -74,7 +81,7 @@ public partial class UploadSignatures
   private static string GetBackBlazeRegion()
   {
     var endpointOrRegion = AnsiConsole.Prompt(
-      new TextPrompt<string>("Please specify your Backblaze [green]endpoint[/] or [green]region[/]:")
+      new TextPrompt<string>("Please specify the Backblaze [green]endpoint[/] or [green]region[/]:")
         .DefaultValue("us-west-000")
         .ShowDefaultValue(true)
         .PromptStyle("blue")
@@ -110,7 +117,7 @@ public partial class UploadSignatures
   private static string GetDigitalOceanRegion()
   {
     var endpointOrRegion = AnsiConsole.Prompt(
-      new TextPrompt<string>("Please specify your Digital Ocean [green]endpoint[/] or [green]region[/]:")
+      new TextPrompt<string>("Please specify the Digital Ocean [green]endpoint[/] or [green]region[/]:")
         .DefaultValue("nyc3")
         .ShowDefaultValue(true)
         .PromptStyle("blue")
@@ -138,7 +145,7 @@ public partial class UploadSignatures
   private static string GetLinodeRegion()
   {
     var endpointOrRegion = AnsiConsole.Prompt(
-      new TextPrompt<string>("Please specify your Linode [green]endpoint[/] or [green]region[/]:")
+      new TextPrompt<string>("Please specify the Linode [green]endpoint[/] or [green]region[/]:")
         .DefaultValue("us-east-1")
         .ShowDefaultValue(true)
         .PromptStyle("blue")
@@ -166,7 +173,7 @@ public partial class UploadSignatures
   private static string GetGenericEndpoint()
   {
     var endpointOrRegion = AnsiConsole.Prompt(
-      new TextPrompt<string>("Please specify your S3 compatible storage provider [green]endpoint[/]:")
+      new TextPrompt<string>("Please specify the S3 compatible storage provider [green]endpoint[/]:")
         .PromptStyle("blue")
         .Validate(endpointUrl =>
         {
@@ -207,7 +214,7 @@ public partial class UploadSignatures
   private static string GetBasePath()
   {
     return AnsiConsole.Prompt(
-      new TextPrompt<string>("Please specify the base [green]path[/]:")
+      new TextPrompt<string>("Please specify the [green]base path[/]:")
         .PromptStyle("blue")
         .Validate(path =>
         {
@@ -242,13 +249,14 @@ public partial class UploadSignatures
   private static BasicAWSCredentials PromptMissingCredentials()
   {
     AnsiConsole.WriteLine("");
-    AnsiConsole.MarkupLine("[red]Error:[/] Could not find your S3-compatible credentials.");
-    AnsiConsole.MarkupLine("To store your credentials securely consult this AWS credential files settings page:");
+    AnsiConsole.MarkupLine("[red]Error:[/] Could not find S3-compatible credentials.");
+    AnsiConsole.WriteLine("");
+    AnsiConsole.MarkupLine("To store credentials securely consult this AWS credential files settings page:");
     AnsiConsole.MarkupLine("- [green]https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html[/]");
     AnsiConsole.WriteLine("");
     
     var accessKey = AnsiConsole.Prompt(
-      new TextPrompt<string>("Please specify your [green]access key[/]:")
+      new TextPrompt<string>("Please specify the [green]access key[/]:")
         .PromptStyle("blue")
         .Validate(path =>
         {
@@ -261,9 +269,9 @@ public partial class UploadSignatures
         }));
     
     var secretKey = AnsiConsole.Prompt(
-      new TextPrompt<string>("Please specify your [green]secretKey[/] (not stored):")
-        .PromptStyle("orange")
-        .Secret('\u25cf') // center circle character
+      new TextPrompt<string>("Please specify the [green]secret key[/] (not stored):")
+        .PromptStyle("darkorange3")
+        .Secret() 
         .Validate(path =>
         {
           if (string.IsNullOrWhiteSpace(path))
