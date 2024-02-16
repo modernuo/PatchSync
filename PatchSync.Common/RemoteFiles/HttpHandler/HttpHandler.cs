@@ -2,7 +2,7 @@ using Microsoft.Extensions.Http;
 using Polly;
 using Polly.Extensions.Http;
 
-namespace PatchSync.SDK;
+namespace PatchSync.Common;
 
 public static class HttpHandler
 {

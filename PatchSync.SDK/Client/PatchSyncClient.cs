@@ -1,44 +1,67 @@
 using System.Diagnostics;
-using System.Text.Json;
+using PatchSync.Common;
 using PatchSync.Common.Manifest;
 using PatchSync.Common.Signatures;
+using PatchSync.SDK.Client;
 using PatchSync.SDK.Signatures;
 
-namespace PatchSync.SDK.Client;
+namespace PatchSync.SDK;
 
-public class PatchSyncClient(string baseUri)
+public partial class PatchSyncClient : IDisposable
 {
-    public PatchManifest Manifest { get; private set; }
+    private string _temporaryLocation;
+    private string _channel;
+    private readonly string _localManifestPath;
 
-    private async Task<Stream> DownloadFile(string relativeUri)
+    // e.g. https://patches.mygameserver.com
+    // With the patchChannel - https://patches.mygameserver.com/Prod
+    private readonly Uri _baseUri;
+
+    public PatchSyncClient(
+        string baseUri, PatchChannel patchChannel, string localInstallationPath, string? localManifestPath = null
+    ) : this(baseUri, localInstallationPath, localManifestPath, patchChannel.ToString())
     {
-        using var httpClient = HttpHandler.CreateHttpClient();
-        var url = new Uri($"{baseUri}/{relativeUri}");
-        var response = await httpClient.GetAsync(url);
-
-        // Throw if not successful
-        response.EnsureSuccessStatusCode();
-
-        return await response.Content.ReadAsStreamAsync();
     }
 
-    public async Task<PatchManifest> GetPatchManifest(string relativeUri)
+    public PatchSyncClient(
+        string baseUri,
+        string localInstallationPath,
+        string? localManifestPath = null,
+        string channel = "prod"
+    )
     {
-        var stream = await DownloadFile(relativeUri);
-        Manifest = await JsonSerializer.DeserializeAsync<PatchManifest>(stream, JsonSerializerOptions.Default) ??
-                   throw new InvalidOperationException("Could not properly download the manifest.");
+        _channel = channel;
+        _baseUri = new Uri(new Uri(baseUri), _channel);
+        LocalInstallationPath = localInstallationPath;
+        _localManifestPath = localManifestPath ?? Path.Combine(LocalInstallationPath, "manifest.json");
+    }
 
-#if NETSTANDARD2_1_OR_GREATER
-        await stream.DisposeAsync();
-#else
-        stream.Dispose();
-#endif
-        return Manifest;
+    public string LocalInstallationPath { get; }
+
+    public CancellationToken CancellationToken { get; private set; }
+
+    private Uri GetFileUri(string relativeUri) => new(_baseUri, relativeUri);
+
+    private DirectoryInfo GetTemporaryDirectory()
+    {
+        if (string.IsNullOrEmpty(_temporaryLocation))
+        {
+            _temporaryLocation = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+            Directory.CreateDirectory(_temporaryLocation);
+        }
+
+        return new DirectoryInfo(_temporaryLocation);
+    }
+
+    public PatchSyncClient WithCancellationToken(CancellationToken cancellationToken)
+    {
+        CancellationToken = cancellationToken;
+        return this;
     }
 
     public async Task<SignatureFile> GetSignatureFile(int originalFileSize, string relativeUri, int chunkSize)
     {
-        var stream = await DownloadFile(relativeUri);
+        var stream = await Downloader.DownloadFileAsync(GetFileUri(relativeUri), cancellationToken: CancellationToken);
         var signatureFile = SignatureFileHandler.LoadSignature(originalFileSize, stream, chunkSize);
 
 #if NETSTANDARD2_1_OR_GREATER
@@ -57,10 +80,11 @@ public class PatchSyncClient(string baseUri)
     {
         long totalSize = 0;
         using var httpClient = HttpHandler.CreateHttpClient();
-        var url = new Uri($"{baseUri}/{relativeUri}");
+        var url = new Uri($"{_baseUri}/{relativeUri}");
 
         // Check if the server supports multi-part ranges
         var headResponse = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, url));
+
         if (!headResponse.Headers.AcceptRanges.Contains("bytes"))
         {
             throw new InvalidOperationException("Server does not support multi-part ranges.");
@@ -127,24 +151,23 @@ public class PatchSyncClient(string baseUri)
                 speed = progressInfo.TotalRead / progressInfo.Stopwatch.Elapsed.TotalSeconds;
             }
 
-            progress?.Report(new DownloadProgress(progressInfo.TotalSize, progressInfo.TotalRead, speed));
+            progress?.Report(new DownloadProgress(progressInfo.Name, progressInfo.TotalSize, progressInfo.TotalRead, speed));
         }
     }
 
     public void ValidateFiles(string baseFolder, Func<ValidationResult> callback) =>
-        FileValidator.ValidateFiles(Manifest, baseFolder, callback);
+        FileValidator.ValidateFiles(_manifest, baseFolder, callback);
 
     private class ProgressInfo(long totalSize)
     {
+        public string FileName { get; set; }
         public long TotalSize { get; } = totalSize;
         public long TotalRead { get; set; }
         public Stopwatch Stopwatch { get; } = new();
     }
 
-    private class DownloadProgress(long totalSize, long totalDownloaded, double speed) : IDownloadProgress
+    public void Dispose()
     {
-        public long TotalSize { get; } = totalSize;
-        public long TotalDownloaded { get; } = totalDownloaded;
-        public double Speed { get; } = speed;
+        Directory.Delete(_temporaryLocation);
     }
 }

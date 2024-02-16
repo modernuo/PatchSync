@@ -10,7 +10,7 @@ using PatchSync.SDK;
 using PatchSync.SDK.Signatures;
 using Spectre.Console;
 
-namespace PatchSync.CLI.Commands.Patch_Installation;
+namespace PatchSync.CLI.Commands;
 
 public partial class PatchInstallation : ICommand
 {

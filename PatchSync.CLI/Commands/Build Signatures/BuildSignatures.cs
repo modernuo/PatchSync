@@ -2,10 +2,10 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
 using PatchSync.CLI.Json;
-using PatchSync.CLI.Threading;
 using PatchSync.Common.Manifest;
 using PatchSync.Common.Text;
 using PatchSync.Manifest;
+using PatchSync.SDK.Threading;
 using PatchSync.Signatures;
 using Spectre.Console;
 
@@ -122,7 +122,8 @@ public partial class BuildSignatures : ICommand
     }
 
     private void DoWork(
-        string file
+        string file,
+        CancellationToken? token
     )
     {
         var fi = new FileInfo(file);

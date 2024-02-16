@@ -1,5 +1,4 @@
 using System.Buffers.Binary;
-using System.Runtime.InteropServices;
 using PatchSync.Common.Signatures;
 #if NET6_0_OR_GREATER
 using System.Runtime.CompilerServices;

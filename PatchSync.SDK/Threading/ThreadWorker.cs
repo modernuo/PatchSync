@@ -1,9 +1,10 @@
 using System.Collections.Concurrent;
 
-namespace PatchSync.CLI.Threading;
+namespace PatchSync.SDK.Threading;
 
 public class ThreadWorker<T>
 {
+    private readonly CancellationToken? _cancellationToken;
     private readonly Action<T> _action;
     private readonly ConcurrentQueue<T> _entities;
     private readonly AutoResetEvent _startEvent; // Main thread tells the thread to start working
@@ -13,8 +14,9 @@ public class ThreadWorker<T>
     private bool _exit;
     private bool _pause;
 
-    public ThreadWorker(Action<T> action)
+    public ThreadWorker(Action<T> action, CancellationToken? cancellationToken)
     {
+        _cancellationToken = cancellationToken;
         _action = action;
         _startEvent = new AutoResetEvent(false);
         _stopEvent = new AutoResetEvent(false);
@@ -23,19 +25,37 @@ public class ThreadWorker<T>
         _thread.Start(this);
     }
 
-    public static void MapParallel(IEnumerable<T> coll, Action<T> action)
+    public static void MapParallel(
+        IEnumerable<T> coll, Action<T> action,
+        CancellationToken? cancellationToken = null
+    )
     {
+        if (cancellationToken?.IsCancellationRequested == true)
+        {
+            throw new OperationCanceledException("The operation was cancelled before it could start.");
+        }
+
         var workerCount = Math.Max(Environment.ProcessorCount - 1, 1);
         var workers = new ThreadWorker<T>[workerCount];
         for (var i = 0; i < workerCount; i++)
         {
-            workers[i] = new ThreadWorker<T>(action);
+            if (cancellationToken?.IsCancellationRequested == true)
+            {
+                throw new OperationCanceledException("The operation was cancelled.");
+            }
+
+            workers[i] = new ThreadWorker<T>(action, cancellationToken);
             workers[i].Wake();
         }
 
         var index = 0;
         foreach (var t in coll)
         {
+            if (cancellationToken?.IsCancellationRequested == true)
+            {
+                break;
+            }
+
             workers[index++].Push(t);
             if (index >= workerCount)
             {
@@ -47,6 +67,12 @@ public class ThreadWorker<T>
         foreach (var worker in workers)
         {
             worker.Exit();
+        }
+
+        // We throw after we properly kill off the workers
+        if (cancellationToken?.IsCancellationRequested == true)
+        {
+            throw new OperationCanceledException("The operation was cancelled.");
         }
 
         Array.Clear(workers);
@@ -83,7 +109,7 @@ public class ThreadWorker<T>
 
         while (worker._startEvent.WaitOne())
         {
-            while (true)
+            while (worker._cancellationToken?.IsCancellationRequested != true)
             {
                 var pauseRequested = Volatile.Read(ref worker._pause);
                 if (reader.TryDequeue(out var t))
