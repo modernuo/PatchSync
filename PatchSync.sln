@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PatchSync.CLI", "PatchSync.CLI\PatchSync.CLI.csproj", "{5D41C62D-3E61-4BBE-9C9A-A3C69ECCB31F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PatchSync.Common", "PatchSync.Common\PatchSync.Common.csproj", "{836FCA55-4876-4946-836E-C6C242658F85}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PatchSync.SDK", "PatchSync.SDK\PatchSync.SDK.csproj", "{133A976B-525A-4BDD-9720-690C1CCB9392}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{5D41C62D-3E61-4BBE-9C9A-A3C69ECCB31F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5D41C62D-3E61-4BBE-9C9A-A3C69ECCB31F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5D41C62D-3E61-4BBE-9C9A-A3C69ECCB31F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5D41C62D-3E61-4BBE-9C9A-A3C69ECCB31F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{836FCA55-4876-4946-836E-C6C242658F85}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{836FCA55-4876-4946-836E-C6C242658F85}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{836FCA55-4876-4946-836E-C6C242658F85}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{836FCA55-4876-4946-836E-C6C242658F85}.Release|Any CPU.Build.0 = Release|Any CPU
+		{133A976B-525A-4BDD-9720-690C1CCB9392}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{133A976B-525A-4BDD-9720-690C1CCB9392}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{133A976B-525A-4BDD-9720-690C1CCB9392}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{133A976B-525A-4BDD-9720-690C1CCB9392}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
