@@ -43,15 +43,12 @@ public static class FileChangesExt
             throw new OperationCanceledException("The operation was cancelled before it could start.");
         }
 
-        var tempFolder = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-        Directory.CreateDirectory(tempFolder);
-
         var installationPath = changes.Client.LocalInstallationPath;
 
         var fullHashBuffer = new byte[32];
 
         // (relativeFilePath, shouldDoFullUpdate)
-        List<(ManifestFileEntry, bool)> filesToPatch = [];
+        List<(string, ManifestFileEntry, bool)> filesToPatch = [];
 
         for (var i = 0; i < changes.Files.Length; i++)
         {
@@ -76,7 +73,7 @@ public static class FileChangesExt
                     {
                         progress?.Report(new FilePatchProgress(command.FilePath, FileChange.FullUpdate, 0));
                         File.Delete(file);
-                        filesToPatch.Add((command, true));
+                        filesToPatch.Add((installationPath, command, true));
                         break;
                     }
                 case ManifestFileCommand.UpdateIfFullHashMismatch:
@@ -105,7 +102,7 @@ public static class FileChangesExt
 
                             // TODO: Optimize by checking against existing local manifest file and determining if this file
                             // has a different full hash.
-                            filesToPatch.Add((command, true));
+                            filesToPatch.Add((installationPath, command, true));
                         }
                         else
                         {
@@ -119,13 +116,13 @@ public static class FileChangesExt
                         progress?.Report(new FilePatchProgress(command.FilePath, FileChange.DeltaUpdate, 0));
                         // TODO: Optimize by checking against existing local manifest file and determining if this file
                         // has a different full hash.
-                        filesToPatch.Add((command, false));
+                        filesToPatch.Add((installationPath, command, false));
                         break;
                     }
             }
         }
 
-        ThreadWorker<(ManifestFileEntry FileEntry, bool FullUpdate)>.MapParallel(
+        ThreadWorker<(string LocalInstallationPath, ManifestFileEntry FileEntry, bool FullUpdate)>.MapParallel(
             filesToPatch,
             fileChangeTuple => DoPatchFiles(fileChangeTuple, progress, cancellationToken),
             cancellationToken
@@ -135,11 +132,31 @@ public static class FileChangesExt
         return new PatchSyncClient.PatchFilesResult(changes.Client, changes.Manifest, changes.Files);
     }
 
-    private static void DoPatchFiles((ManifestFileEntry FileEntry, bool FullUpdate) fileEntry, IProgress<FilePatchProgress> progress, CancellationToken cancellationToken)
+    private static void DoPatchFiles(
+        (string localInstallationpath, ManifestFileEntry fileEntry, bool fullUpdate) fileEntry,
+        IProgress<FilePatchProgress> progress, CancellationToken cancellationToken
+    )
     {
         if (cancellationToken.IsCancellationRequested)
         {
             throw new OperationCanceledException("The operation was cancelled before it could start.");
+        }
+
+        var (localInstallationPath, command, fullUpdate) = fileEntry;
+        var file = Path.Combine(localInstallationPath, command.FilePath);
+
+        var tempFolder = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
+        Directory.CreateDirectory(tempFolder);
+
+        if (fullUpdate) // Full Update
+        {
+            progress?.Report(new FilePatchProgress(command.FilePath, FileChange.FullUpdate, 0));
+
+            progress?.Report(new FilePatchProgress(command.FilePath, FileChange.FullUpdate, 1));
+        }
+        else // Delta Update
+        {
+            progress?.Report(new FilePatchProgress(command.FilePath, FileChange.DeltaUpdate, 0));
         }
     }
 }

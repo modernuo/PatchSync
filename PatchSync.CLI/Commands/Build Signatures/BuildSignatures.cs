@@ -122,8 +122,7 @@ public partial class BuildSignatures : ICommand
     }
 
     private void DoWork(
-        string file,
-        CancellationToken? token
+        string file
     )
     {
         var fi = new FileInfo(file);

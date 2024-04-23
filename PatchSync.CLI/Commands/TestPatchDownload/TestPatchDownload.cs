@@ -1,3 +1,4 @@
+using PatchSync.SDK;
 using PatchSync.SDK.Client;
 
 namespace PatchSync.CLI.Commands;

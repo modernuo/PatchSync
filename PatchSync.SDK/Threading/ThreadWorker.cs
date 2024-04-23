@@ -75,7 +75,7 @@ public class ThreadWorker<T>
             throw new OperationCanceledException("The operation was cancelled.");
         }
 
-        Array.Clear(workers);
+        Array.Clear(workers, 0, workers.Length);
     }
 
     public void Wake()
