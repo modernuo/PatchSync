@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using PatchSync.Common;
 using PatchSync.Common.Manifest;
@@ -75,7 +76,8 @@ public partial class PatchSyncClient : IDisposable
     public async IAsyncEnumerable<Stream> DownloadDeltaPatchFileAsync(
         string relativeUri,
         IEnumerable<(long Start, long End)> ranges,
-        IProgress<IDownloadProgress> progress = null
+        IProgress<IDownloadProgress> progress = null,
+        CancellationToken cancellationToken = default
     )
     {
         long totalSize = 0;
@@ -83,7 +85,7 @@ public partial class PatchSyncClient : IDisposable
         var url = new Uri($"{_baseUri}/{relativeUri}");
 
         // Check if the server supports multi-part ranges
-        var headResponse = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, url));
+        var headResponse = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, url), cancellationToken);
 
         if (!headResponse.Headers.AcceptRanges.Contains("bytes"))
         {
@@ -99,7 +101,7 @@ public partial class PatchSyncClient : IDisposable
             );
         }
 
-        using var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
+        using var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
 
         // Throw if not successful
         response.EnsureSuccessStatusCode();
@@ -129,21 +131,19 @@ public partial class PatchSyncClient : IDisposable
         }
     }
 
-    private static async Task CopyToStreamAsync(HttpContent content, Stream destination, ProgressInfo progressInfo, IProgress<IDownloadProgress> progress)
+    private static async Task CopyToStreamAsync(
+        HttpContent content, Stream destination, ProgressInfo progressInfo, IProgress<IDownloadProgress> progress = null,
+        CancellationToken cancellationToken = default
+    )
     {
-#if NET6_0_OR_GREATER
-        byte[] buffer = GC.AllocateUninitializedArray<byte>(81920);
-#else
-        byte[] buffer = new byte[81920];
-#endif
-
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(81920);
         using var stream = await content.ReadAsStreamAsync();
         progressInfo.Stopwatch.Start();
 
         int bytesRead;
-        while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) != 0)
+        while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)) != 0)
         {
-            await destination.WriteAsync(buffer, 0, bytesRead);
+            await destination.WriteAsync(buffer, 0, bytesRead, cancellationToken);
 
             double speed = 0;
             if (progressInfo.Stopwatch.Elapsed.TotalSeconds > 0)
@@ -151,8 +151,10 @@ public partial class PatchSyncClient : IDisposable
                 speed = progressInfo.TotalRead / progressInfo.Stopwatch.Elapsed.TotalSeconds;
             }
 
-            progress?.Report(new DownloadProgress(progressInfo.Name, progressInfo.TotalSize, progressInfo.TotalRead, speed));
+            progress?.Report(new DownloadProgress(progressInfo.FileName, progressInfo.TotalSize, progressInfo.TotalRead, speed));
         }
+
+        ArrayPool<byte>.Shared.Return(buffer);
     }
 
     public void ValidateFiles(string baseFolder, Func<ValidationResult> callback) =>

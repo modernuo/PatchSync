@@ -29,7 +29,7 @@ public static class HexStringConverter
     public static string ToHexString(this byte[] bytes) => new ReadOnlySpan<byte>(bytes).ToHexString();
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static string ToHexString(this Span<byte> bytes) => ((ReadOnlySpan<byte>)bytes).ToHexString();
+    public static string ToHexString(this scoped Span<byte> bytes) => ((ReadOnlySpan<byte>)bytes).ToHexString();
 
     public static unsafe string ToHexString(this ReadOnlySpan<byte> bytes)
     {

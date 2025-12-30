@@ -136,11 +136,11 @@ public static class ManifestDownloadResultExt
                 if (entry.Command is ManifestFileCommand.UpdateIfFullHashMismatch)
                 {
                     using var stream = File.Open(fullPath, FileMode.Open, FileAccess.Read);
-                    Span<byte> fullHashBuffer;
 #if NET6_0_OR_GREATER
-                    fullHashBuffer = stackalloc byte[32];
+                    Span<byte> fullHashBuffer = stackalloc byte[32];
                     SHA256.HashData(stream, fullHashBuffer);
 #else
+                    Span<byte> fullHashBuffer;
                     using (var sha256 = SHA256.Create())
                     {
                         fullHashBuffer = sha256.ComputeHash(stream);
