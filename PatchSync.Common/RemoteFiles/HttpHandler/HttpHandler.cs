@@ -15,12 +15,8 @@ public static class HttpHandler
             var retryPolicy = HttpPolicyExtensions
                 .HandleTransientHttpError()
                 .WaitAndRetryAsync(3, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)));
-
-#if NET6_0_OR_GREATER
-      var socketHandler = new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(3) };
-#else
-            var socketHandler = new HttpClientHandler();
-#endif
+            
+            var socketHandler = new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(3) };
 
             _policyHandler = new PolicyHttpMessageHandler(retryPolicy)
             {

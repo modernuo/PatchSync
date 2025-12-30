@@ -65,11 +65,7 @@ public partial class PatchSyncClient : IDisposable
         var stream = await Downloader.DownloadFileAsync(GetFileUri(relativeUri), cancellationToken: CancellationToken);
         var signatureFile = SignatureFileHandler.LoadSignature(originalFileSize, stream, chunkSize);
 
-#if NETSTANDARD2_1_OR_GREATER
         await stream.DisposeAsync();
-#else
-        stream.Dispose();
-#endif
         return signatureFile;
     }
 

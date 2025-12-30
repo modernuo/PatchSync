@@ -19,20 +19,12 @@ public static class Downloader
         response.EnsureSuccessStatusCode();
 
         var contentLength = response.Content.Headers.ContentLength;
-#if NET6_0_OR_GREATER
         await using var download = await response.Content.ReadAsStreamAsync(cancellationToken);
-#else
-        using var download = await response.Content.ReadAsStreamAsync();
-#endif
 
         // Ignore progress reporting when no progress reporter was
         // passed or when the content length is unknown
         if (progress == null || contentLength == null) {
-#if NET6_0_OR_GREATER
             await download.CopyToAsync(destination, cancellationToken);
-#else
-            await download.CopyToAsync(destination, 81920, cancellationToken);
-#endif
             return;
         }
 
@@ -46,11 +38,7 @@ public static class Downloader
         CancellationToken cancellationToken
     )
     {
-#if NET6_0_OR_GREATER
         byte[] buffer = GC.AllocateUninitializedArray<byte>(81920);
-#else
-        byte[] buffer = new byte[81920];
-#endif
 
         int bytesRead;
         while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)) != 0)

@@ -85,14 +85,7 @@ public static class FileChangesExt
                         if (!hasChanges)
                         {
                             using var stream = File.Open(file, FileMode.Open, FileAccess.Read);
-#if NET6_0_OR_GREATER
                             SHA256.HashData(stream, fullHashBuffer);
-#else
-                            using (var sha256 = SHA256.Create())
-                            {
-                                fullHashBuffer = sha256.ComputeHash(stream);
-                            }
-#endif
                             hasChanges = command.Hash != fullHashBuffer.ToHexString();
                         }
 

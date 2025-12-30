@@ -14,11 +14,7 @@ public static partial class SignatureFileHandler
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static int GetDefaultChunkSize(long length) =>
-#if NET6_0_OR_GREATER
         Math.Clamp(RoundUp((int)Math.Sqrt(length)), 704, 65528);
-#else
-        Math.Min(Math.Max(RoundUp((int)Math.Sqrt(length)), 704), 65528);
-#endif
 
     public static SignatureFile GenerateSignature(
         ReadOnlySpan<byte> source,
@@ -94,11 +90,7 @@ public static partial class SignatureFileHandler
 
         for (var i = 0; i < chunkCount; i++)
         {
-#if NETSTANDARD2_1_OR_GREATER
             if (stream.Read(chunk) != chunkSize)
-#else
-            if (stream.Read(chunk, 0, chunkSize) != chunk.Length)
-#endif
             {
                 throw new InvalidOperationException("Reached end of stream prematurely");
             }
@@ -110,11 +102,7 @@ public static partial class SignatureFileHandler
 
         if (lastChunkSize > 0)
         {
-#if NETSTANDARD2_1_OR_GREATER
             if (stream.Read(chunk) != chunkSize)
-#else
-            if (stream.Read(chunk, 0, (int)lastChunkSize) != lastChunkSize)
-#endif
             {
                 throw new InvalidOperationException("Reached end of stream prematurely");
             }
@@ -125,11 +113,7 @@ public static partial class SignatureFileHandler
             }
             else
             {
-#if NETSTANDARD2_1_OR_GREATER
                 remainingData = chunk[..(int)lastChunkSize].ToArray();
-#else
-                remainingData = chunk.AsSpan(0, (int)lastChunkSize).ToArray();
-#endif
             }
 
             processingResult.InProgress(lastChunkSize);
