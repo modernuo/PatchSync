@@ -1,31 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch",
-      "WebFetch(domain:www.usenix.org)",
-      "WebFetch(domain:joshleeb.com)",
-      "WebFetch(domain:en.wikipedia.org)",
-      "WebFetch(domain:restic.net)",
-      "WebFetch(domain:borgbackup.readthedocs.io)",
-      "WebFetch(domain:docs.rs)",
-      "WebFetch(domain:github.com)",
-      "WebFetch(domain:pypi.org)",
-      "WebFetch(domain:0pointer.net)",
-      "WebFetch(domain:zsync.moria.org.uk)",
-      "WebFetch(domain:technology.riotgames.com)",
-      "WebFetch(domain:hydraulic.dev)",
-      "WebFetch(domain:restic.readthedocs.io)",
-      "WebFetch(domain:lwn.net)",
-      "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:arxiv.org)",
-      "Bash(git checkout:*)",
       "Bash(dotnet build:*)",
-      "Bash(Remove-Item \"PatchSync.Common\\\\Signatures\\\\SignatureChunk.cs\")",
-      "Bash(Remove-Item \"PatchSync.Common\\\\Signatures\\\\SignatureFile.cs\")",
-      "Bash(dotnet new:*)",
-      "Bash(dotnet add:*)",
       "Bash(dotnet test:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(dotnet new:*)",
+      "Bash(dotnet sln:*)",
+      "Bash(dotnet add:*)",
+      "WebSearch",
+      "Bash(dotnet run:*)",
+      "Bash(git config:*)",
+      "Bash(git reset:*)"
     ]
   }
 }
