@@ -798,6 +798,921 @@ public class ChunkingBenchmarks
 
 ---
 
+---
+
+## Phase 6: CLI Workspace System
+
+### Goal: Structured project management with channels, versioning, and publish workflows
+
+This phase transforms the CLI from standalone commands into a comprehensive workspace-based system that supports professional game development workflows.
+
+### 6.1 Motivation & Problem Statement
+
+**Current limitations:**
+- Each build is standalone with no history
+- No relationship between builds and uploads
+- Cannot manage prod/beta/dev deployments
+- No way to promote versions between channels
+- No "staged" vs "published" distinction
+- Cannot roll back to previous versions
+- No CI/CD integration points
+
+**Target users:**
+- Game developers with multiple release channels
+- CI/CD pipelines that build and publish automatically
+- Teams that need rollback capability
+- Developers who want to preview before publishing
+
+---
+
+### 6.2 Workspace Structure
+
+```
+mygame-patchsync/                      # Workspace root
+├── patchsync.workspace.json           # Main configuration (required)
+├── .patchsync/                        # Internal state (git-ignored)
+│   ├── credentials.protected          # DPAPI-encrypted credentials (Windows)
+│   ├── state.json                     # Runtime state & pending operations
+│   └── cache/                         # Chunk hash cache for incremental builds
+│       └── chunks/                    # Content-addressed chunk metadata
+│
+├── channels/                          # Channel-organized builds
+│   ├── prod/                          # Production channel
+│   │   ├── channel.json               # Channel config & version history
+│   │   └── versions/
+│   │       ├── 1.0.0/                 # Version-specific directory
+│   │       │   ├── version.json       # Build metadata & status
+│   │       │   ├── manifest.json      # Game manifest
+│   │       │   ├── signatures/        # PSI1 signature files
+│   │       │   │   └── *.sig
+│   │       │   ├── files/             # Raw files (optional, for local testing)
+│   │       │   └── compressed/        # Compressed fallbacks (optional)
+│   │       └── 1.0.1/
+│   │
+│   ├── beta/
+│   │   ├── channel.json
+│   │   └── versions/
+│   │       └── 1.1.0-beta.1/
+│   │
+│   └── dev/
+│       ├── channel.json
+│       └── versions/
+│           └── nightly-20251230/
+│
+└── .gitignore                         # Ignore .patchsync/, credentials, large files
+```
+
+---
+
+### 6.3 Configuration Schemas
+
+#### 6.3.1 `patchsync.workspace.json` - Main Workspace Configuration
+
+```json
+{
+  "$schema": "https://patchsync.dev/schemas/workspace.v1.json",
+  "schemaVersion": 1,
+
+  "project": {
+    "name": "MyAwesomeGame",
+    "id": "my-awesome-game",
+    "description": "Delta patching workspace for MyAwesomeGame"
+  },
+
+  "defaults": {
+    "inputPath": "C:/GameDev/MyAwesomeGame/Build/Output",
+    "chunking": {
+      "algorithm": "fastcdc-v1",
+      "minChunkSize": 4096,
+      "avgChunkSize": 16384,
+      "maxChunkSize": 65536,
+      "minDeltaSize": 65536
+    },
+    "compression": {
+      "enabled": true,
+      "algorithm": "zstd",
+      "level": 9
+    }
+  },
+
+  "channels": {
+    "prod": {
+      "displayName": "Production",
+      "description": "Stable release channel",
+      "isDefault": true,
+      "versionPattern": "^\\d+\\.\\d+\\.\\d+$",
+      "retainVersions": 10,
+      "publish": {
+        "profile": "production-cdn"
+      }
+    },
+    "beta": {
+      "displayName": "Beta",
+      "description": "Pre-release testing",
+      "versionPattern": "^\\d+\\.\\d+\\.\\d+-beta\\.\\d+$",
+      "retainVersions": 5,
+      "publish": {
+        "profile": "beta-cdn",
+        "prefix": "beta/"
+      }
+    },
+    "dev": {
+      "displayName": "Development",
+      "description": "Internal builds",
+      "versionPattern": ".*",
+      "retainVersions": 3,
+      "publish": {
+        "profile": "dev-cdn",
+        "prefix": "dev/"
+      }
+    }
+  },
+
+  "publishProfiles": {
+    "production-cdn": {
+      "type": "s3",
+      "endpoint": "https://s3.amazonaws.com",
+      "bucket": "mygame-cdn",
+      "region": "us-east-1",
+      "publicUrl": "https://cdn.mygame.com",
+      "credentialSource": "environment"
+    },
+    "beta-cdn": {
+      "type": "s3",
+      "endpoint": "https://s3.amazonaws.com",
+      "bucket": "mygame-cdn",
+      "region": "us-east-1",
+      "publicUrl": "https://beta-cdn.mygame.com",
+      "credentialSource": "environment"
+    },
+    "dev-cdn": {
+      "type": "s3",
+      "endpoint": "https://nyc3.digitaloceanspaces.com",
+      "bucket": "mygame-dev",
+      "region": "nyc3",
+      "publicUrl": "https://dev.mygame.com",
+      "credentialSource": "stored"
+    }
+  }
+}
+```
+
+**⚠️ CRITICAL: JSON Source Generation Required**
+
+All configuration types MUST use `System.Text.Json` source generators for NativeAOT compatibility:
+
+```csharp
+[JsonSerializable(typeof(WorkspaceConfig))]
+[JsonSerializable(typeof(ChannelConfig))]
+[JsonSerializable(typeof(VersionMetadata))]
+[JsonSerializable(typeof(WorkspaceState))]
+[JsonSourceGenerationOptions(
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    WriteIndented = true,
+    DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
+public partial class WorkspaceJsonContext : JsonSerializerContext { }
+```
+
+#### 6.3.2 `channels/{channel}/channel.json` - Channel State
+
+```json
+{
+  "schemaVersion": 1,
+  "channelId": "prod",
+  "displayName": "Production",
+
+  "current": {
+    "version": "1.0.1",
+    "publishedAt": "2025-12-28T15:30:00Z",
+    "manifestUrl": "https://cdn.mygame.com/manifest.json"
+  },
+
+  "history": [
+    {
+      "version": "1.0.1",
+      "status": "live",
+      "builtAt": "2025-12-28T14:00:00Z",
+      "publishedAt": "2025-12-28T15:30:00Z"
+    },
+    {
+      "version": "1.0.0",
+      "status": "superseded",
+      "builtAt": "2025-12-20T10:00:00Z",
+      "publishedAt": "2025-12-20T12:00:00Z"
+    }
+  ],
+
+  "rollbackAvailable": ["1.0.0"]
+}
+```
+
+#### 6.3.3 `channels/{channel}/versions/{version}/version.json` - Build Metadata
+
+```json
+{
+  "schemaVersion": 1,
+  "version": "1.0.1",
+  "channel": "prod",
+
+  "build": {
+    "builtAt": "2025-12-28T14:00:00Z",
+    "builtBy": "ci-build-agent-01",
+    "buildNumber": "456",
+    "duration": 127.5,
+    "patchsyncVersion": "2.0.0"
+  },
+
+  "input": {
+    "path": "C:/GameDev/MyAwesomeGame/Build/Output",
+    "hash": "sha256:abc123def456...",
+    "fileCount": 1847,
+    "totalSize": 52428800000
+  },
+
+  "output": {
+    "manifestHash": "sha256:manifest123...",
+    "signatureCount": 1842,
+    "signatureTotalSize": 2621440,
+    "compressedAvailable": true,
+    "compressedTotalSize": 35200000000
+  },
+
+  "chunking": {
+    "algorithm": "fastcdc-v1",
+    "minChunkSize": 4096,
+    "avgChunkSize": 16384,
+    "maxChunkSize": 65536,
+    "totalChunks": 3215847
+  },
+
+  "status": "staged",
+
+  "publish": {
+    "profile": "production-cdn",
+    "publishedAt": null,
+    "manifestUrl": null,
+    "uploadedFiles": 0,
+    "uploadedBytes": 0
+  },
+
+  "comparison": {
+    "previousVersion": "1.0.0",
+    "newFiles": 12,
+    "modifiedFiles": 45,
+    "deletedFiles": 10,
+    "unchangedFiles": 1780,
+    "estimatedDeltaDownload": 524288000
+  },
+
+  "notes": "Bug fixes and performance improvements",
+  "tags": ["hotfix", "perf"]
+}
+```
+
+---
+
+### 6.4 Version Status Lifecycle
+
+```
+                    ┌────────────┐
+                    │   BUILD    │
+                    └─────┬──────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────┐
+│              STAGED                      │
+│  - Signatures generated                  │
+│  - Manifest created                      │
+│  - Not yet uploaded to CDN               │
+│  - Can be modified (notes, tags)         │
+│  - Can be deleted without side effects   │
+└─────────────────┬───────────────────────┘
+                  │
+                  │ patchsync publish
+                  ▼
+┌─────────────────────────────────────────┐
+│            PUBLISHED                     │
+│  - Uploaded to CDN                       │
+│  - Accessible via manifest URL           │
+│  - Becomes "live" for this channel       │
+│  - Previous live version → SUPERSEDED    │
+└─────────────────┬───────────────────────┘
+                  │
+                  │ (new version published)
+                  ▼
+┌─────────────────────────────────────────┐
+│           SUPERSEDED                     │
+│  - Still on CDN (for rollback)           │
+│  - Not the current version               │
+│  - Can be promoted to LIVE via rollback  │
+└─────────────────┬───────────────────────┘
+                  │
+                  │ patchsync clean
+                  ▼
+┌─────────────────────────────────────────┐
+│            ARCHIVED                      │
+│  - Removed from CDN                      │
+│  - Metadata retained locally             │
+│  - Cannot be rolled back to              │
+└─────────────────────────────────────────┘
+```
+
+**Status enum:**
+
+```csharp
+public enum VersionStatus
+{
+    Building,      // Build in progress (lock file exists)
+    Staged,        // Built, not published
+    Publishing,    // Upload in progress
+    Live,          // Current version for this channel
+    Superseded,    // Was live, now replaced by newer
+    Archived,      // Removed from CDN, metadata only
+    Failed         // Build or publish failed
+}
+```
+
+---
+
+### 6.5 Command Specifications
+
+#### `patchsync init`
+
+Initialize a new workspace or upgrade existing configuration.
+
+```bash
+patchsync init [--path <dir>] [--name <project-name>]
+
+Options:
+  --path <dir>           Directory to initialize (default: current)
+  --name <name>          Project name
+  --from-existing        Migrate from existing patchsync.json
+  --channels <list>      Comma-separated channel names (default: prod,beta,dev)
+
+Examples:
+  patchsync init --name "MyGame" --channels prod,beta
+  patchsync init --from-existing
+```
+
+**Implementation notes:**
+- Interactive wizard mode when no arguments provided
+- Validate directory doesn't already have workspace
+- Create .gitignore with recommended patterns
+
+#### `patchsync build`
+
+Build signatures and manifest for a version.
+
+```bash
+patchsync build --channel <channel> --version <version> [options]
+
+Required:
+  -c, --channel <name>   Target channel (prod, beta, dev)
+  -v, --version <ver>    Version string (must match channel pattern)
+
+Input:
+  -i, --input <path>     Input directory (overrides workspace default)
+
+Chunking (overrides workspace defaults):
+  -a, --algorithm <alg>  Chunking algorithm
+  --min-chunk <N>        Minimum chunk size
+  --avg-chunk <N>        Average chunk size
+  --max-chunk <N>        Maximum chunk size
+
+Options:
+  --compress             Generate compressed fallbacks (default: true)
+  --compare <version>    Compare against specific version
+  --notes <text>         Build notes/description
+  --tags <list>          Comma-separated tags
+  --dry-run              Show what would be built without building
+  --force                Overwrite existing version
+
+Output:
+  --json                 Output build result as JSON
+
+Examples:
+  patchsync build -c prod -v 1.0.0 -i C:/Game/Build
+  patchsync build -c beta -v 1.1.0-beta.1 --notes "New features"
+```
+
+**⚠️ CRITICAL: Build Locking**
+
+Prevent concurrent builds to the same version:
+
+```csharp
+// channels/{channel}/versions/{version}/.build.lock
+{
+  "lockedBy": "machine-name",
+  "lockedAt": "2025-12-30T10:00:00Z",
+  "pid": 12345
+}
+```
+
+Lock acquisition must be atomic. Consider file-based locking with retry logic.
+
+#### `patchsync publish`
+
+Publish a staged version to CDN.
+
+```bash
+patchsync publish --channel <channel> [--version <version>] [options]
+
+Required:
+  -c, --channel <name>   Channel to publish
+
+Options:
+  -v, --version <ver>    Version to publish (default: latest staged)
+  --profile <name>       Override publish profile
+  --dry-run              Show what would be uploaded
+  --force                Force republish even if already published
+  --parallel <N>         Upload parallelism (default: 4)
+
+Examples:
+  patchsync publish -c prod
+  patchsync publish -c prod -v 1.0.1 --dry-run
+```
+
+**Implementation notes:**
+- Must validate version is in "staged" status
+- Update channel.json atomically after successful upload
+- Support resumable uploads (track uploaded files in version.json)
+
+#### `patchsync promote`
+
+Promote a version from one channel to another.
+
+```bash
+patchsync promote <source-channel>:<version> <target-channel> [options]
+
+Arguments:
+  <source>               Source channel:version (e.g., beta:1.1.0-beta.3)
+  <target>               Target channel (e.g., prod)
+
+Options:
+  --as <version>         Rename version for target (e.g., --as 1.1.0)
+  --publish              Immediately publish after promoting
+  --dry-run              Show what would be promoted
+
+Examples:
+  patchsync promote beta:1.1.0-beta.3 prod --as 1.1.0
+  patchsync promote dev:nightly-20251230 beta --as 1.2.0-beta.1 --publish
+```
+
+**Implementation notes:**
+- Copy version directory, don't move (preserve source)
+- Update version.json with new channel/version
+- Validate target version matches channel's versionPattern
+
+#### `patchsync rollback`
+
+Roll back a channel to a previous version.
+
+```bash
+patchsync rollback --channel <channel> [--to <version>] [options]
+
+Required:
+  -c, --channel <name>   Channel to roll back
+
+Options:
+  --to <version>         Target version (default: previous)
+  --dry-run              Show what would happen
+
+Examples:
+  patchsync rollback -c prod
+  patchsync rollback -c prod --to 1.0.0
+```
+
+**⚠️ CRITICAL: Rollback is CDN-level**
+
+Rollback updates channel.json's `current` pointer and potentially re-uploads the manifest. The old version's files must still exist on CDN (not cleaned).
+
+#### `patchsync status`
+
+Show current workspace status.
+
+```bash
+patchsync status [options]
+
+Options:
+  -c, --channel <name>   Filter by channel
+  --staged               Show only staged (unpublished) versions
+  --json                 Output as JSON
+
+Examples:
+  patchsync status
+  patchsync status -c prod
+  patchsync status --staged --json
+```
+
+#### `patchsync list`
+
+List versions and channels.
+
+```bash
+patchsync list [channels|versions] [options]
+
+Subcommands:
+  channels               List all channels
+  versions               List versions
+
+Options:
+  -c, --channel <name>   Filter by channel (for versions)
+  --limit <N>            Max results (default: 20)
+  --status <status>      Filter by status (staged, live, superseded)
+  --json                 Output as JSON
+
+Examples:
+  patchsync list channels
+  patchsync list versions -c prod --limit 10
+  patchsync list versions --status staged
+```
+
+#### `patchsync diff`
+
+Compare two versions.
+
+```bash
+patchsync diff <version1> <version2> [options]
+
+Arguments:
+  <version1>             First version (channel:version or just version)
+  <version2>             Second version
+
+Options:
+  --files                Show file-level differences
+  --stats                Show statistics only (default)
+  --json                 Output as JSON
+
+Examples:
+  patchsync diff prod:1.0.0 prod:1.0.1
+  patchsync diff beta:1.1.0-beta.1 beta:1.1.0-beta.2 --files
+```
+
+#### `patchsync clean`
+
+Remove old versions to save space.
+
+```bash
+patchsync clean [options]
+
+Options:
+  -c, --channel <name>   Clean specific channel only
+  --keep <N>             Keep N most recent versions (overrides config)
+  --before <date>        Remove versions before date
+  --status <status>      Clean only versions with status
+  --dry-run              Show what would be cleaned
+
+Examples:
+  patchsync clean -c dev --keep 3
+  patchsync clean --status superseded --dry-run
+```
+
+**⚠️ CRITICAL: CDN Cleanup**
+
+When cleaning published versions, must also remove from CDN. This is destructive and should require `--confirm` flag.
+
+---
+
+### 6.6 CI/CD Integration
+
+#### Environment Variables
+
+```bash
+# Workspace location (optional, defaults to current directory)
+PATCHSYNC_WORKSPACE=/path/to/workspace
+
+# Credentials per profile (naming: PATCHSYNC_{PROFILE}_*)
+PATCHSYNC_PRODUCTION_CDN_ACCESS_KEY=AKIA...
+PATCHSYNC_PRODUCTION_CDN_SECRET_KEY=...
+PATCHSYNC_BETA_CDN_ACCESS_KEY=AKIA...
+PATCHSYNC_BETA_CDN_SECRET_KEY=...
+
+# Build metadata injection
+PATCHSYNC_BUILD_NUMBER=456
+PATCHSYNC_BUILD_AGENT=ci-agent-01
+```
+
+#### Exit Codes
+
+```csharp
+public enum ExitCode
+{
+    Success = 0,
+    GeneralError = 1,
+    InvalidArguments = 2,
+    WorkspaceNotFound = 3,
+    VersionAlreadyExists = 4,
+    VersionNotFound = 5,
+    ChannelNotFound = 6,
+    PublishFailed = 7,
+    ValidationFailed = 8,
+    CredentialsMissing = 9,
+    NetworkError = 10,
+    LockConflict = 11,
+    CancelledByUser = 130
+}
+```
+
+#### Machine-Readable Output (--json)
+
+All commands support `--json` for CI/CD parsing:
+
+```json
+{
+  "success": true,
+  "operation": "build",
+  "exitCode": 0,
+  "result": {
+    "channel": "prod",
+    "version": "1.0.1",
+    "status": "staged",
+    "files": 1847,
+    "totalSize": 52428800000,
+    "duration": 127.5,
+    "manifestPath": "channels/prod/versions/1.0.1/manifest.json"
+  },
+  "warnings": [],
+  "errors": []
+}
+```
+
+#### GitHub Actions Example
+
+```yaml
+name: Build and Publish
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Game
+        run: ./build.sh
+
+      - name: Build PatchSync
+        run: |
+          patchsync build \
+            -c prod \
+            -v ${{ github.ref_name }} \
+            -i ./build/output \
+            --json > build-result.json
+
+      - name: Publish to CDN
+        env:
+          PATCHSYNC_PRODUCTION_CDN_ACCESS_KEY: ${{ secrets.CDN_ACCESS_KEY }}
+          PATCHSYNC_PRODUCTION_CDN_SECRET_KEY: ${{ secrets.CDN_SECRET_KEY }}
+        run: |
+          patchsync publish -c prod --json > publish-result.json
+```
+
+---
+
+### 6.7 Implementation Complexity & Critical Areas
+
+#### 🔴 HIGH COMPLEXITY: Atomic State Updates
+
+**Problem:** Multiple JSON files must be updated together (version.json, channel.json, state.json). Partial writes can corrupt state.
+
+**Solution:**
+1. Write to `.tmp` files first
+2. Validate JSON is parseable
+3. Rename atomically (File.Move with overwrite)
+4. For multi-file updates, use a transaction log in state.json
+
+```csharp
+public class WorkspaceTransaction : IDisposable
+{
+    private readonly List<(string Target, string TempPath)> _pending = new();
+
+    public void Stage(string targetPath, string content)
+    {
+        var tempPath = targetPath + ".tmp";
+        File.WriteAllText(tempPath, content);
+        _pending.Add((targetPath, tempPath));
+    }
+
+    public void Commit()
+    {
+        foreach (var (target, temp) in _pending)
+            File.Move(temp, target, overwrite: true);
+    }
+
+    public void Rollback()
+    {
+        foreach (var (_, temp) in _pending)
+            if (File.Exists(temp)) File.Delete(temp);
+    }
+}
+```
+
+#### 🔴 HIGH COMPLEXITY: Concurrent Build Prevention
+
+**Problem:** Two CI jobs could build the same version simultaneously, causing corruption.
+
+**Solution:**
+1. Create lock file with PID and timestamp
+2. Check lock file before build starts
+3. Implement lock timeout (stale lock detection)
+4. Use file system atomic create (FileMode.CreateNew)
+
+```csharp
+public class BuildLock : IDisposable
+{
+    private readonly string _lockPath;
+    private FileStream? _lockStream;
+
+    public static BuildLock? TryAcquire(string versionPath, TimeSpan timeout)
+    {
+        var lockPath = Path.Combine(versionPath, ".build.lock");
+
+        // Check for stale lock
+        if (File.Exists(lockPath))
+        {
+            var lockInfo = ReadLockInfo(lockPath);
+            if (DateTime.UtcNow - lockInfo.LockedAt > timeout)
+            {
+                // Stale lock, remove it
+                File.Delete(lockPath);
+            }
+            else
+            {
+                return null; // Lock held by another process
+            }
+        }
+
+        // Atomic lock creation
+        try
+        {
+            var stream = new FileStream(lockPath,
+                FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            var lockInfo = new LockInfo(
+                Environment.MachineName,
+                DateTime.UtcNow,
+                Environment.ProcessId);
+            // Write lock info...
+            return new BuildLock(lockPath, stream);
+        }
+        catch (IOException)
+        {
+            return null; // Another process beat us
+        }
+    }
+}
+```
+
+#### 🔴 HIGH COMPLEXITY: Resumable Uploads
+
+**Problem:** Large uploads (50GB+) can fail mid-way. Must resume without re-uploading.
+
+**Solution:**
+Track uploaded files in version.json's `publish` section:
+
+```json
+"publish": {
+  "uploadedFiles": ["manifest.json", "signatures/file1.sig", ...],
+  "uploadedBytes": 1234567890,
+  "lastUploadAt": "2025-12-30T10:00:00Z"
+}
+```
+
+On resume:
+1. Load list of uploaded files
+2. Verify each file exists on CDN (HEAD request)
+3. Continue from first missing file
+
+#### 🟡 MEDIUM COMPLEXITY: Version Pattern Validation
+
+**Problem:** Channels define version patterns (regex). Must validate before build.
+
+**Solution:**
+```csharp
+public bool ValidateVersion(string channel, string version)
+{
+    var config = _workspace.Channels[channel];
+    if (string.IsNullOrEmpty(config.VersionPattern))
+        return true;
+
+    var regex = new Regex(config.VersionPattern);
+    if (!regex.IsMatch(version))
+    {
+        _logger.Error($"Version '{version}' does not match pattern '{config.VersionPattern}' for channel '{channel}'");
+        return false;
+    }
+    return true;
+}
+```
+
+**⚠️ Note:** Regex compilation should be cached. Consider source-generated regex for AOT.
+
+#### 🟡 MEDIUM COMPLEXITY: Promote with Rename
+
+**Problem:** Promoting beta:1.1.0-beta.3 to prod as 1.1.0 requires updating all references.
+
+**Solution:**
+1. Copy version directory to new location
+2. Update version.json: change `version` and `channel` fields
+3. Re-generate manifest.json with new version
+4. DO NOT regenerate signatures (content unchanged)
+
+#### 🟡 MEDIUM COMPLEXITY: Credential Resolution
+
+**Problem:** Multiple credential sources (environment, stored, profile-specific).
+
+**Resolution order:**
+1. Profile-specific env vars: `PATCHSYNC_{PROFILE_UPPER}_ACCESS_KEY`
+2. Generic env vars: `PATCHSYNC_S3_ACCESS_KEY`
+3. Stored credentials (DPAPI-encrypted)
+4. Interactive prompt (if TTY available)
+
+---
+
+### 6.8 Testing Requirements
+
+#### Unit Tests (Required)
+
+| Test | Description | Priority |
+|------|-------------|----------|
+| `WorkspaceConfigSerializationTests` | Round-trip JSON serialization | 🔴 Critical |
+| `VersionStatusTransitionTests` | Valid state transitions only | 🔴 Critical |
+| `VersionPatternValidationTests` | Regex pattern matching | 🟡 High |
+| `ChannelConfigTests` | Channel defaults, inheritance | 🟡 High |
+| `BuildLockTests` | Lock acquire/release/timeout | 🔴 Critical |
+| `WorkspaceTransactionTests` | Atomic commit/rollback | 🔴 Critical |
+
+#### Integration Tests (Required)
+
+| Test | Description | Priority |
+|------|-------------|----------|
+| `InitWorkspaceTests` | Create workspace, validate structure | 🔴 Critical |
+| `BuildVersionTests` | Full build cycle, verify outputs | 🔴 Critical |
+| `PublishVersionTests` | Upload to mock S3, verify status | 🔴 Critical |
+| `PromoteVersionTests` | Cross-channel promotion | 🟡 High |
+| `RollbackTests` | Rollback and verify channel state | 🟡 High |
+| `ConcurrentBuildTests` | Two builds, one should fail | 🔴 Critical |
+| `ResumableUploadTests` | Interrupt upload, resume | 🟡 High |
+
+#### Edge Cases to Test
+
+1. **Workspace in git submodule** - Paths may be relative
+2. **Unicode in paths** - Project names with special characters
+3. **Very long paths** - Windows 260 char limit
+4. **Disk full during build** - Graceful failure
+5. **Network timeout during publish** - Resume correctly
+6. **Corrupted state.json** - Recovery mechanism
+7. **Clock skew** - Timestamps from different machines
+
+---
+
+### 6.9 Files to Create
+
+| File | Purpose |
+|------|---------|
+| `PatchSync.CLI/Workspace/WorkspaceConfig.cs` | Main configuration model |
+| `PatchSync.CLI/Workspace/ChannelConfig.cs` | Channel configuration |
+| `PatchSync.CLI/Workspace/VersionMetadata.cs` | Version build metadata |
+| `PatchSync.CLI/Workspace/WorkspaceState.cs` | Runtime state |
+| `PatchSync.CLI/Workspace/WorkspaceManager.cs` | Core workspace operations |
+| `PatchSync.CLI/Workspace/BuildLock.cs` | Concurrent build prevention |
+| `PatchSync.CLI/Workspace/WorkspaceTransaction.cs` | Atomic multi-file updates |
+| `PatchSync.CLI/Workspace/WorkspaceJsonContext.cs` | JSON source generation |
+| `PatchSync.CLI/Commands/InitCommand.cs` | Workspace initialization |
+| `PatchSync.CLI/Commands/StatusCommand.cs` | Status display |
+| `PatchSync.CLI/Commands/ListCommand.cs` | List versions/channels |
+| `PatchSync.CLI/Commands/PromoteCommand.cs` | Channel promotion |
+| `PatchSync.CLI/Commands/RollbackCommand.cs` | Version rollback |
+| `PatchSync.CLI/Commands/DiffCommand.cs` | Version comparison |
+| `PatchSync.CLI/Commands/CleanCommand.cs` | Cleanup old versions |
+
+### 6.10 Files to Modify
+
+| File | Changes |
+|------|---------|
+| `BuildCommand.cs` | Add workspace awareness, channel targeting, status tracking |
+| `UploadCommand.cs` | Rename to `PublishCommand.cs`, integrate with workspace |
+| `Program.cs` | Add new command routing |
+| `CommandRegistry.cs` | Register new commands |
+
+---
+
+### 6.11 Implementation Order
+
+1. **Workspace foundation** - WorkspaceConfig, WorkspaceManager, JSON context
+2. **Init command** - Create workspace structure
+3. **Build integration** - Update BuildCommand for workspace mode
+4. **Status/List commands** - Visibility into workspace state
+5. **Publish command** - Rename UploadCommand, add status tracking
+6. **Promote command** - Cross-channel promotion
+7. **Rollback command** - Version rollback
+8. **Diff command** - Version comparison
+9. **Clean command** - Old version cleanup
+10. **CI/CD polish** - Exit codes, --json output, env vars
+
+---
+
 ## Open Questions
 
 1. ~~**Index format extension**: Do we need to extend .caibx for byte offsets?~~
@@ -820,3 +1735,7 @@ public class ChunkingBenchmarks
 6. **GUI tool**: Should we build a GUI in addition to CLI?
    - Could use AvaloniaUI for cross-platform
    - Or provide SDK for launcher developers to embed
+
+7. **Workspace format versioning**: How to handle workspace schema upgrades?
+   - Migration scripts per version
+   - Backward compatibility window

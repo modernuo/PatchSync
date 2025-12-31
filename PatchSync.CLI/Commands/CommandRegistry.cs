@@ -77,6 +77,24 @@ public static class CommandRegistry
             Handler = InfoCommand.RunAsync,
             WizardHandler = InfoCommand.RunWizardAsync
         });
+
+        Register(new CommandInfo
+        {
+            Name = "init",
+            Description = "Initialize a new PatchSync workspace",
+            Icon = ":sparkles:",
+            Handler = InitCommand.RunAsync,
+            WizardHandler = InitCommand.RunWizardAsync
+        });
+
+        Register(new CommandInfo
+        {
+            Name = "status",
+            Description = "Show workspace status and pending operations",
+            Icon = ":bar_chart:",
+            Handler = StatusCommand.RunAsync,
+            WizardHandler = StatusCommand.RunWizardAsync
+        });
     }
 
     /// <summary>
