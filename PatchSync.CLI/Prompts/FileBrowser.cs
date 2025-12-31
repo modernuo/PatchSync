@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Text;
 using Spectre.Console;
 
 namespace PatchSync.CLI.Prompts;
@@ -18,21 +17,22 @@ public class FileBrowser
     // Spectre.Console emoji codes - see https://spectreconsole.net/console/reference/emoji-reference
     private static class Icons
     {
-        public const string Folder = ":file_folder:";        // 📁
-        public const string FolderOpen = ":open_file_folder:"; // 📂
-        public const string File = ":page_facing_up:";       // 📄
-        public const string Drive = ":optical_disk:";        // 💿
-        public const string Up = ":up_arrow:";               // ⬆
-        public const string Check = ":check_mark_button:";   // ✅
-        public const string Plus = ":plus:";                 // ➕
-        public const string Lock = ":locked:";               // 🔒
-        public const string Gear = ":gear:";                 // ⚙
-        public const string Package = ":package:";           // 📦
-        public const string Image = ":framed_picture:";      // 🖼
-        public const string Music = ":musical_note:";        // 🎵
-        public const string Video = ":clapper_board:";       // 🎬
-        public const string Code = ":scroll:";               // 📜
-        public const string Note = ":memo:";                 // 📝
+        public const string Folder = ":file_folder:";                // 📁
+        public const string FolderOpen = ":open_file_folder:";       // 📂
+        public const string File = ":page_facing_up:";               // 📄
+        public const string Drive = ":optical_disk:";                // 💿
+        public const string Up = ":upwards_button:";                 // 🔼
+        public const string Check = ":check_mark_button:";           // ✅
+        public const string Plus = ":plus:";                         // ➕
+        public const string Lock = ":locked:";                       // 🔒
+        public const string HammerAndWrench = ":hammer_and_wrench:"; // 🛠
+        public const string Package = ":package:";                   // 📦
+        public const string Image = ":framed_picture:";              // 🖼
+        public const string Music = ":musical_note:";                // 🎵
+        public const string Video = ":clapper_board:";               // 🎬
+        public const string Code = ":scroll:";                       // 📜
+        public const string Note = ":memo:";                         // 📝
+        public const string Ok = ":ok_button:";                      // 🆗
     }
 
     private bool _selectFile;
@@ -170,7 +170,7 @@ public class FileBrowser
             if (!_selectFile)
             {
                 choices.Add((
-                    FormatChoice(Icons.Check, "Select This Folder", Color.Blue),
+                    FormatChoice(Icons.Ok, "Select This Folder", Color.Blue),
                     currentDir,
                     ChoiceType.Select
                 ));
@@ -187,7 +187,7 @@ public class FileBrowser
             }
 
             // Subdirectories
-            foreach (var dir in directories.OrderBy(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase))
+            foreach (var dir in directories.OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
             {
                 var name = Path.GetFileName(dir);
                 choices.Add((
@@ -323,7 +323,7 @@ public class FileBrowser
     private string FormatChoice(string icon, string text, Color color)
     {
         var coloredText = color == Color.Default ? text : $"[{color.ToMarkup()}]{text}[/]";
-        return DisplayIcons ? $"{icon} {coloredText}" : coloredText;
+        return DisplayIcons && !string.IsNullOrEmpty(icon) ? $"{icon} {coloredText}" : coloredText;
     }
 
     private static string GetFileIcon(string path)
@@ -331,17 +331,17 @@ public class FileBrowser
         var ext = Path.GetExtension(path).ToLowerInvariant();
         return ext switch
         {
-            ".json" => Icons.File,
-            ".sig" => Icons.Lock,
-            ".exe" or ".dll" => Icons.Gear,
-            ".zip" or ".gz" or ".zst" or ".7z" or ".rar" => Icons.Package,
-            ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".webp" => Icons.Image,
-            ".mp3" or ".ogg" or ".wav" or ".flac" => Icons.Music,
-            ".mp4" or ".webm" or ".avi" or ".mkv" => Icons.Video,
-            ".txt" or ".md" or ".log" => Icons.Note,
-            ".cs" or ".js" or ".ts" or ".py" or ".go" or ".rs" => Icons.Code,
-            ".xml" or ".yaml" or ".yml" or ".toml" => Icons.Gear,
-            _ => Icons.File
+            ".json"                                                             => Icons.File,
+            ".sig"                                                              => Icons.Lock,
+            ".exe" or ".dll"                                                    => Icons.HammerAndWrench,
+            ".zip" or ".gz" or ".zst" or ".7z" or ".rar" or ".pak" or ".bundle" => Icons.Package,
+            ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".webp"          => Icons.Image,
+            ".mp3" or ".ogg" or ".wav" or ".flac"                               => Icons.Music,
+            ".mp4" or ".webm" or ".avi" or ".mkv"                               => Icons.Video,
+            ".txt" or ".md" or ".log"                                           => Icons.Note,
+            ".cs" or ".js" or ".ts" or ".py" or ".go" or ".rs"                  => Icons.Code,
+            ".xml" or ".yaml" or ".yml" or ".toml"                              => Icons.HammerAndWrench,
+            _                                                                   => Icons.File
         };
     }
 
