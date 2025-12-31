@@ -458,25 +458,17 @@ public static class CliBuilder
             Description = "Text to preview (default: PatchSync)"
         };
 
-        var styleOption = new Option<int?>("--style", "-s")
+        var command = new Command("fonts", "Interactive title style preview (↑/↓ to cycle)")
         {
-            Description = "Show specific style by number"
-        };
-
-        var command = new Command("fonts", "Preview title fonts and styles (development tool)")
-        {
-            textOption,
-            styleOption
+            textOption
         };
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
             var text = parseResult.GetValue(textOption);
-            var style = parseResult.GetValue(styleOption);
 
             var args = new List<string>();
             if (text != null) { args.Add("--text"); args.Add(text); }
-            if (style != null) { args.Add("--style"); args.Add(style.Value.ToString()); }
 
             return await FontPreviewCommand.RunAsync(args.ToArray());
         });
