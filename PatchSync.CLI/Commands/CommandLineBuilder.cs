@@ -36,6 +36,7 @@ public static class CliBuilder
         rootCommand.Add(BuildUploadCommand());
         rootCommand.Add(BuildStatusCommand());
         rootCommand.Add(BuildInfoCommand());
+        rootCommand.Add(BuildFontsCommand());
 
         // Root command handler (no subcommand = interactive mode)
         rootCommand.SetAction(async (parseResult, cancellationToken) =>
@@ -441,6 +442,43 @@ public static class CliBuilder
             var file = parseResult.GetValue(fileArg);
             var args = file != null ? new[] { file } : Array.Empty<string>();
             return await InfoCommand.RunAsync(args);
+        });
+
+        return command;
+    }
+
+    #endregion
+
+    #region Fonts Command
+
+    private static Command BuildFontsCommand()
+    {
+        var textOption = new Option<string?>("--text", "-t")
+        {
+            Description = "Text to preview (default: PatchSync)"
+        };
+
+        var styleOption = new Option<int?>("--style", "-s")
+        {
+            Description = "Show specific style by number"
+        };
+
+        var command = new Command("fonts", "Preview title fonts and styles (development tool)")
+        {
+            textOption,
+            styleOption
+        };
+
+        command.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var text = parseResult.GetValue(textOption);
+            var style = parseResult.GetValue(styleOption);
+
+            var args = new List<string>();
+            if (text != null) { args.Add("--text"); args.Add(text); }
+            if (style != null) { args.Add("--style"); args.Add(style.Value.ToString()); }
+
+            return await FontPreviewCommand.RunAsync(args.ToArray());
         });
 
         return command;
