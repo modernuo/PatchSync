@@ -1,4 +1,7 @@
 using PatchSync.CLI.Prompts;
+using PatchSync.CLI.Wizard;
+using PatchSync.CLI.Wizard.Steps;
+using PatchSync.CLI.Wizard.Themes;
 using PatchSync.CLI.Workspace;
 using Spectre.Console;
 
@@ -54,88 +57,104 @@ public static class InitCommand
 
     private static async Task<(int ExitCode, WorkspaceManager? Workspace)> RunWizardCoreAsync()
     {
-        AnsiConsole.MarkupLine("[grey]Initialize a new PatchSync workspace[/]\n");
+        // Use BoxTheme for a polished look
+        var wizard = new WizardRunner("Initialize Workspace", new BoxTheme())
+            .AddStep(new FolderBrowseStep(
+                key: "path",
+                displayName: "Workspace Directory",
+                prompt: "Select workspace directory",
+                allowNew: true))
+            .AddStep(new TextStep(
+                key: "name",
+                displayName: "Project Name",
+                prompt: "Project name",
+                defaultValueFactory: ctx =>
+                {
+                    var path = ctx.Get<string>("path");
+                    return Path.GetFileName(Path.GetFullPath(path));
+                },
+                allowEmpty: true))
+            .AddStep(new TextStep(
+                key: "projectId",
+                displayName: "Project ID",
+                prompt: "Project ID (lowercase, hyphens only)",
+                defaultValueFactory: ctx =>
+                {
+                    var name = ctx.GetOrDefault<string>("name");
+                    if (string.IsNullOrWhiteSpace(name))
+                    {
+                        var path = ctx.Get<string>("path");
+                        name = Path.GetFileName(Path.GetFullPath(path));
+                    }
+                    return ToProjectId(name);
+                },
+                allowEmpty: true,
+                validator: s =>
+                {
+                    if (string.IsNullOrWhiteSpace(s))
+                        return ValidationResult.Success();
+                    if (!IsValidProjectId(s))
+                        return ValidationResult.Error("Must be lowercase letters, numbers, and hyphens only");
+                    return ValidationResult.Success();
+                }))
+            .AddStep(new MultiSelectStep(
+                key: "channels",
+                displayName: "Release Channels",
+                prompt: "Select channels to create",
+                choices: new[] { "prod", "beta", "dev", "staging", "nightly" },
+                preselected: new[] { "prod", "beta", "dev" }))
+            .AddStep(new ConfirmStep(
+                key: "configureInput",
+                displayName: "Input Directory",
+                question: "Configure default input directory?",
+                defaultValue: false))
+            .AddStep(ConditionalStep.WhenTrue("configureInput",
+                new FolderBrowseStep(
+                    key: "inputPath",
+                    displayName: "Default Input Path",
+                    prompt: "Select default input directory")));
 
-        // Workspace path - type path or press Enter to browse
-        var pathInput = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Workspace directory[/] [grey](Enter to browse)[/]:")
-                .AllowEmpty());
+        if (!await wizard.RunAsync())
+        {
+            // User cancelled
+            return (0, null);
+        }
 
-        string path;
-        if (string.IsNullOrWhiteSpace(pathInput))
-        {
-            path = Browse.ForFolder("[green]Select workspace directory[/]", allowNew: true);
-        }
-        else
-        {
-            path = Path.GetFullPath(pathInput);
-        }
-        AnsiConsole.MarkupLine($"[blue]Path:[/] {path}\n");
+        // Extract values from context
+        var ctx = wizard.Context;
+        var path = ctx.Get<string>("path");
 
         // Check if workspace already exists
         var manager = WorkspaceManager.ForPath(path);
         if (manager.Exists)
         {
-            AnsiConsole.MarkupLine("[yellow]A workspace already exists at this location.[/]");
-            if (!await AnsiConsole.ConfirmAsync("Overwrite existing workspace?", defaultValue: false))
+            AnsiConsole.MarkupLine("\n[yellow]A workspace already exists at this location.[/]");
+            var overwrite = WizardPrompt.Confirm(
+                "Overwrite existing workspace?",
+                wizard.Theme,
+                defaultValue: false,
+                allowBack: false);
+
+            if (!overwrite.IsSuccess || !overwrite.Value)
             {
-                AnsiConsole.MarkupLine("[grey]Cancelled.[/]");
+                wizard.Theme.ShowCancelled();
                 return (0, null);
             }
         }
 
-        // Project name
-        var defaultName = Path.GetFileName(Path.GetFullPath(path));
-        var name = AnsiConsole.Prompt(
-            new TextPrompt<string>($"[green]Project name[/] [[{defaultName}]]:")
-                .AllowEmpty());
+        // Get values with defaults
+        var name = ctx.GetOrDefault<string>("name");
         if (string.IsNullOrWhiteSpace(name))
-            name = defaultName;
+            name = Path.GetFileName(Path.GetFullPath(path));
 
-        // Project ID (derived from name)
-        var defaultId = ToProjectId(name);
-        var id = AnsiConsole.Prompt(
-            new TextPrompt<string>($"[green]Project ID[/] [[{defaultId}]]:")
-                .AllowEmpty()
-                .Validate(s =>
-                {
-                    if (string.IsNullOrWhiteSpace(s))
-                        return ValidationResult.Success();
-                    if (!IsValidProjectId(s))
-                        return ValidationResult.Error("Project ID must be lowercase letters, numbers, and hyphens only");
-                    return ValidationResult.Success();
-                }));
-        if (string.IsNullOrWhiteSpace(id))
-            id = defaultId;
+        var projectId = ctx.GetOrDefault<string>("projectId");
+        if (string.IsNullOrWhiteSpace(projectId))
+            projectId = ToProjectId(name);
 
-        // Channels
-        var channelChoices = new MultiSelectionPrompt<string>()
-            .Title("[green]Select channels to create:[/]")
-            .AddChoices("prod", "beta", "dev", "staging", "nightly")
-            .Select("prod")
-            .Select("beta")
-            .Select("dev");
-        var channels = AnsiConsole.Prompt(channelChoices);
+        var channels = ctx.Get<List<string>>("channels");
+        var inputPath = ctx.GetOrDefault<string>("inputPath");
 
-        // Default input path (optional)
-        string? inputPath = null;
-        if (await AnsiConsole.ConfirmAsync("Configure default input directory?", defaultValue: false))
-        {
-            var inputPathInput = AnsiConsole.Prompt(
-                new TextPrompt<string>("[green]Default input directory[/] [grey](Enter to browse)[/]:")
-                    .AllowEmpty());
-
-            if (string.IsNullOrWhiteSpace(inputPathInput))
-            {
-                inputPath = Browse.ForFolder("[green]Select default input directory[/]");
-            }
-            else
-            {
-                inputPath = Path.GetFullPath(inputPathInput);
-            }
-        }
-
-        var exitCode = await ExecuteAsync(path, name, channels.ToArray(), id, inputPath);
+        var exitCode = await ExecuteAsync(path, name, channels.ToArray(), projectId, inputPath);
         return (exitCode, exitCode == 0 ? manager : null);
     }
 
