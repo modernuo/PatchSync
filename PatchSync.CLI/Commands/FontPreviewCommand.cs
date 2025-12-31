@@ -17,6 +17,7 @@ public static class FontPreviewCommand
     private const string XeroBase = "https://raw.githubusercontent.com/xero/figlet-fonts/main/";
     private const string HimeiBase = "https://raw.githubusercontent.com/hIMEI29A/FigletFonts/master/src/";
     private const string PhrackerBase = "https://raw.githubusercontent.com/phracker/figlet-fonts/master/";
+    private const string PhMajerusBase = "https://raw.githubusercontent.com/PhMajerus/FIGfonts/main/fonts/";
 
     /// <summary>
     /// Available Figlet fonts - comprehensive list from multiple repositories.
@@ -364,6 +365,36 @@ public static class FontPreviewCommand
         ("Wet Letter", "wetletter.flf", XeroBase + "wetletter.flf"),
         ("Whimsy", "Whimsy.flf", XeroBase + "Whimsy.flf"),
         ("Wow", "Wow.flf", XeroBase + "Wow.flf"),
+
+        // === PhMajerus Modern Unicode Fonts ===
+        ("PHM Beyond Blue", "phm-beyond-blue.flf", PhMajerusBase + "beyond-blue.flf"),
+        ("PHM BeyondNeo Blue", "phm-beyondneo-blue.flf", PhMajerusBase + "phm-beyondneo-blue.flf"),
+        ("PHM BeyondNeo Cyan", "phm-beyondneo-cyan.flf", PhMajerusBase + "phm-beyondneo-cyan.flf"),
+        ("PHM BeyondNeo Gold", "phm-beyondneo-gold.flf", PhMajerusBase + "phm-beyondneo-gold.flf"),
+        ("PHM BeyondNeo Green", "phm-beyondneo-green.flf", PhMajerusBase + "phm-beyondneo-green.flf"),
+        ("PHM BeyondNeo Mono", "phm-beyondneo-mono.flf", PhMajerusBase + "phm-beyondneo-mono.flf"),
+        ("PHM BeyondNeo Orange", "phm-beyondneo-orange.flf", PhMajerusBase + "phm-beyondneo-orange.flf"),
+        ("PHM BeyondNeo Pink", "phm-beyondneo-pink.flf", PhMajerusBase + "phm-beyondneo-pink.flf"),
+        ("PHM BeyondNeo Purple", "phm-beyondneo-purple.flf", PhMajerusBase + "phm-beyondneo-purple.flf"),
+        ("PHM BeyondNeo Red", "phm-beyondneo-red.flf", PhMajerusBase + "phm-beyondneo-red.flf"),
+        ("PHM BeyondNeo Silver", "phm-beyondneo-silver.flf", PhMajerusBase + "phm-beyondneo-silver.flf"),
+        ("PHM BeyondNeo Yellow", "phm-beyondneo-yellow.flf", PhMajerusBase + "phm-beyondneo-yellow.flf"),
+        ("PHM Blocky", "phm-blocky.flf", PhMajerusBase + "phm-blocky.flf"),
+        ("PHM Blocky Reverse", "phm-blocky-reverse.flf", PhMajerusBase + "phm-blocky-reverse.flf"),
+        ("PHM C64", "phm-c64.flf", PhMajerusBase + "phm-c64.flf"),
+        ("PHM CGA", "phm-cga.flf", PhMajerusBase + "phm-cga.flf"),
+        ("PHM Chisel", "phm-chisel.flf", PhMajerusBase + "phm-chisel.flf"),
+        ("PHM DOSV", "phm-dosv.flf", PhMajerusBase + "phm-dosv.flf"),
+        ("PHM HP2640 LargeType", "phm-hp2640-largetype.flf", PhMajerusBase + "hp2640-largetype.flf"),
+        ("PHM LargeType", "phm-largetype.flf", PhMajerusBase + "phm-largetype.flf"),
+        ("PHM LargeType ASCII", "phm-largetype-ascii.flf", PhMajerusBase + "phm-largetype-ASCII.flf"),
+        ("PHM LCD Matrix", "phm-lcdmatrix.flf", PhMajerusBase + "phm-lcdmatrix.flf"),
+        ("PHM Rounded", "phm-rounded.flf", PhMajerusBase + "phm-rounded.flf"),
+        ("PHM Shinonome", "phm-shinonome.flf", PhMajerusBase + "phm-shinonome.flf"),
+        ("PHM Slanted", "phm-slanted.flf", PhMajerusBase + "phm-slanted.flf"),
+        ("PHM SmallVT", "phm-smallvt.flf", PhMajerusBase + "phm-smallvt.flf"),
+        ("PHM VGA", "phm-vga.flf", PhMajerusBase + "phm-vga.flf"),
+        ("PHM VGA Square", "phm-vga-square.flf", PhMajerusBase + "phm-vga-square.flf"),
     ];
 
     /// <summary>
