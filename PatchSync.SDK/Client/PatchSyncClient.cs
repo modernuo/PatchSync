@@ -1,171 +1,415 @@
-using System.Buffers;
-using System.Diagnostics;
-using PatchSync.Common;
+using System.Security.Cryptography;
+using System.Text.Json;
+using PatchSync.Common.Chunking;
 using PatchSync.Common.Manifest;
 using PatchSync.Common.Signatures;
-using PatchSync.SDK.Client;
-using PatchSync.SDK.Signatures;
+using PatchSync.Common.Storage;
+using PatchSync.SDK.Assembly;
+using PatchSync.SDK.Delta;
+using PatchSync.SDK.Sources;
 
-namespace PatchSync.SDK;
+namespace PatchSync.SDK.Client;
 
-public partial class PatchSyncClient : IDisposable
+/// <summary>
+/// Main client for applying patches to a game installation.
+/// </summary>
+public sealed class PatchSyncClient : IDisposable
 {
-    private string _temporaryLocation;
-    private string _channel;
-    private readonly string _localManifestPath;
-
-    // e.g. https://patches.mygameserver.com
-    // With the patchChannel - https://patches.mygameserver.com/Prod
-    private readonly Uri _baseUri;
+    private readonly IStorageProvider _storage;
+    private readonly IChunkerRegistry _chunkerRegistry;
+    private readonly PatchClientOptions _options;
+    private readonly FileAssembler _assembler;
+    private readonly DownloadStrategySelector _strategySelector;
 
     public PatchSyncClient(
-        string baseUri, PatchChannel patchChannel, string localInstallationPath, string? localManifestPath = null
-    ) : this(baseUri, localInstallationPath, localManifestPath, patchChannel.ToString())
+        IStorageProvider storage,
+        IChunkerRegistry? chunkerRegistry = null,
+        PatchClientOptions? options = null)
     {
+        _storage = storage ?? throw new ArgumentNullException(nameof(storage));
+        _chunkerRegistry = chunkerRegistry ?? ChunkerRegistry.Default;
+        _options = options ?? new PatchClientOptions();
+        _assembler = new FileAssembler(storage, _options.AssemblyOptions);
+        _strategySelector = new DownloadStrategySelector(_options.DeltaThreshold);
     }
 
-    public PatchSyncClient(
-        string baseUri,
-        string localInstallationPath,
-        string? localManifestPath = null,
-        string channel = "prod"
-    )
+    /// <summary>
+    /// Fetches the manifest from the remote storage.
+    /// </summary>
+    public async Task<GameManifest> GetManifestAsync(
+        string manifestPath = "manifest.json",
+        CancellationToken cancellationToken = default)
     {
-        _channel = channel;
-        _baseUri = new Uri(new Uri(baseUri), _channel);
-        LocalInstallationPath = localInstallationPath;
-        _localManifestPath = localManifestPath ?? Path.Combine(LocalInstallationPath, "manifest.json");
+        await using var stream = await _storage.GetAsync(manifestPath, cancellationToken);
+        var manifest = await JsonSerializer.DeserializeAsync(
+            stream,
+            ManifestJsonContext.Default.GameManifest,
+            cancellationToken);
+
+        return manifest ?? throw new InvalidDataException("Manifest was null");
     }
 
-    public string LocalInstallationPath { get; }
-
-    public CancellationToken CancellationToken { get; private set; }
-
-    private Uri GetFileUri(string relativeUri) => new(_baseUri, relativeUri);
-
-    private DirectoryInfo GetTemporaryDirectory()
+    /// <summary>
+    /// Applies patches to bring the local installation up to date with the manifest.
+    /// </summary>
+    public async Task PatchAsync(
+        string localPath,
+        GameManifest manifest,
+        IProgress<PatchProgress>? progress = null,
+        CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrEmpty(_temporaryLocation))
+        // Validate we support at least one algorithm
+        if (!_chunkerRegistry.TryGetChunker(manifest.PreferredAlgorithm, out var chunker))
         {
-            _temporaryLocation = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-            Directory.CreateDirectory(_temporaryLocation);
-        }
+            var supported = manifest.SupportedAlgorithms
+                .FirstOrDefault(a => _chunkerRegistry.SupportedAlgorithms.Contains(a));
 
-        return new DirectoryInfo(_temporaryLocation);
-    }
-
-    public PatchSyncClient WithCancellationToken(CancellationToken cancellationToken)
-    {
-        CancellationToken = cancellationToken;
-        return this;
-    }
-
-    public async Task<SignatureFile> GetSignatureFile(int originalFileSize, string relativeUri, int chunkSize)
-    {
-        var stream = await Downloader.DownloadFileAsync(GetFileUri(relativeUri), cancellationToken: CancellationToken);
-        var signatureFile = SignatureFileHandler.LoadSignature(originalFileSize, stream, chunkSize);
-
-        await stream.DisposeAsync();
-        return signatureFile;
-    }
-
-    public async IAsyncEnumerable<Stream> DownloadDeltaPatchFileAsync(
-        string relativeUri,
-        IEnumerable<(long Start, long End)> ranges,
-        IProgress<IDownloadProgress> progress = null,
-        CancellationToken cancellationToken = default
-    )
-    {
-        long totalSize = 0;
-        using var httpClient = HttpHandler.CreateHttpClient();
-        var url = new Uri($"{_baseUri}/{relativeUri}");
-
-        // Check if the server supports multi-part ranges
-        var headResponse = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, url), cancellationToken);
-
-        if (!headResponse.Headers.AcceptRanges.Contains("bytes"))
-        {
-            throw new InvalidOperationException("Server does not support multi-part ranges.");
-        }
-
-        httpClient.DefaultRequestHeaders.Range = new System.Net.Http.Headers.RangeHeaderValue();
-        foreach (var range in ranges)
-        {
-            totalSize += range.End - range.Start + 1;
-            httpClient.DefaultRequestHeaders.Range.Ranges.Add(
-                new System.Net.Http.Headers.RangeItemHeaderValue(range.Start, range.End)
-            );
-        }
-
-        using var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-
-        // Throw if not successful
-        response.EnsureSuccessStatusCode();
-
-        var progressInfo = new ProgressInfo(totalSize);
-
-        if (response.Content.Headers.ContentType?.MediaType.Equals(
-                "multipart/byteranges", StringComparison.OrdinalIgnoreCase
-            ) == true)
-        {
-            var memoryStream = new MemoryStream();
-
-            if (response.Content is MultipartContent multipart)
+            if (supported == null)
             {
-                foreach (var content in multipart)
-                {
-                    await CopyToStreamAsync(content, memoryStream, progressInfo, progress);
-                    memoryStream.Seek(0, SeekOrigin.Begin); // Reset memory stream position for reading
-                    yield return memoryStream;
-                    memoryStream.SetLength(0); // Clear memory stream for next part
-                }
+                throw new NotSupportedException(
+                    $"No supported chunking algorithms. Server supports: {string.Join(", ", manifest.SupportedAlgorithms)}. " +
+                    $"Client supports: {string.Join(", ", _chunkerRegistry.SupportedAlgorithms)}");
             }
+
+            chunker = _chunkerRegistry.GetPreferred(new[] { supported });
+        }
+
+        var filesToProcess = manifest.Files
+            .Where(f => f.Strategy != UpdateStrategy.Delete)
+            .ToList();
+
+        var totalBytes = filesToProcess.Sum(f => f.Size);
+        var processedBytes = 0L;
+        var processedFiles = 0;
+
+        progress?.Report(new PatchProgress(
+            PatchPhase.Starting,
+            0, filesToProcess.Count,
+            0, totalBytes,
+            null, 0));
+
+        foreach (var file in filesToProcess)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var localFilePath = Path.Combine(localPath, file.Path.Replace('/', Path.DirectorySeparatorChar));
+            var fileProgress = new FileProgress(file.Path);
+
+            progress?.Report(new PatchProgress(
+                PatchPhase.Processing,
+                processedFiles, filesToProcess.Count,
+                processedBytes, totalBytes,
+                file.Path, 0));
+
+            await ProcessFileAsync(
+                localFilePath, file, chunker, manifest,
+                p => progress?.Report(new PatchProgress(
+                    PatchPhase.Processing,
+                    processedFiles, filesToProcess.Count,
+                    processedBytes + (long)(file.Size * p), totalBytes,
+                    file.Path, p)),
+                cancellationToken);
+
+            processedBytes += file.Size;
+            processedFiles++;
+        }
+
+        // Handle deletions
+        var filesToDelete = manifest.Files
+            .Where(f => f.Strategy == UpdateStrategy.Delete)
+            .ToList();
+
+        foreach (var file in filesToDelete)
+        {
+            var localFilePath = Path.Combine(localPath, file.Path.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(localFilePath))
+            {
+                File.Delete(localFilePath);
+            }
+        }
+
+        progress?.Report(new PatchProgress(
+            PatchPhase.Complete,
+            processedFiles, filesToProcess.Count,
+            totalBytes, totalBytes,
+            null, 1.0));
+    }
+
+    private async Task ProcessFileAsync(
+        string localFilePath,
+        ManifestFile file,
+        IChunker chunker,
+        GameManifest manifest,
+        Action<double>? progressCallback,
+        CancellationToken cancellationToken)
+    {
+        // Check if file exists and matches hash
+        if (File.Exists(localFilePath))
+        {
+            var localHash = await ComputeFileHashAsync(localFilePath, cancellationToken);
+            if (string.Equals(localHash, file.Hash, StringComparison.OrdinalIgnoreCase))
+            {
+                progressCallback?.Invoke(1.0);
+                return; // File is up to date
+            }
+        }
+
+        // Determine update strategy
+        switch (file.Strategy)
+        {
+            case UpdateStrategy.HashCheck:
+            case UpdateStrategy.AlwaysCompressed:
+                await DownloadFullFileAsync(localFilePath, file, manifest, cancellationToken);
+                break;
+
+            case UpdateStrategy.CreateOnly:
+                if (!File.Exists(localFilePath))
+                {
+                    await DownloadFullFileAsync(localFilePath, file, manifest, cancellationToken);
+                }
+                break;
+
+            case UpdateStrategy.Delta:
+            default:
+                await DeltaPatchFileAsync(localFilePath, file, chunker, manifest, progressCallback, cancellationToken);
+                break;
+        }
+
+        progressCallback?.Invoke(1.0);
+    }
+
+    private async Task DeltaPatchFileAsync(
+        string localFilePath,
+        ManifestFile file,
+        IChunker chunker,
+        GameManifest manifest,
+        Action<double>? progressCallback,
+        CancellationToken cancellationToken)
+    {
+        // Download signature
+        var signaturePath = file.SignatureUrl ?? $"signatures/{file.Path}.sig";
+        await using var sigStream = await _storage.GetAsync(signaturePath, cancellationToken);
+        var signature = SignatureFile.Read(sigStream);
+
+        // Build local chunk source if file exists
+        IChunkSource localSource;
+        if (File.Exists(localFilePath))
+        {
+            localSource = LocalFileSource.Build(
+                localFilePath,
+                chunker,
+                signature.GetChunkingOptions());
         }
         else
         {
-            yield return await response.Content.ReadAsStreamAsync();
+            localSource = new CompositeChunkSource();
         }
+
+        // Calculate delta
+        var calculator = new DeltaCalculator();
+        var plan = calculator.Calculate(signature, localSource);
+
+        // Decide strategy
+        var decision = _strategySelector.Select(
+            plan,
+            file.CompressedSize,
+            file.Size);
+
+        if (decision.Method == DownloadMethod.Compressed && !string.IsNullOrEmpty(file.CompressedUrl))
+        {
+            await DownloadCompressedFileAsync(localFilePath, file, manifest, cancellationToken);
+            return;
+        }
+
+        if (decision.Method == DownloadMethod.Full)
+        {
+            await DownloadFullFileAsync(localFilePath, file, manifest, cancellationToken);
+            return;
+        }
+
+        // Delta patch
+        var remotePath = file.Path;
+        var assemblyProgress = new Progress<AssemblyProgress>(p =>
+            progressCallback?.Invoke(p.Percentage));
+
+        await _assembler.AssembleAsync(
+            localFilePath,
+            remotePath,
+            plan,
+            file.Hash,
+            assemblyProgress,
+            cancellationToken);
     }
 
-    private static async Task CopyToStreamAsync(
-        HttpContent content, Stream destination, ProgressInfo progressInfo, IProgress<IDownloadProgress> progress = null,
-        CancellationToken cancellationToken = default
-    )
+    private async Task DownloadFullFileAsync(
+        string localFilePath,
+        ManifestFile file,
+        GameManifest manifest,
+        CancellationToken cancellationToken)
     {
-        byte[] buffer = ArrayPool<byte>.Shared.Rent(81920);
-        using var stream = await content.ReadAsStreamAsync();
-        progressInfo.Stopwatch.Start();
+        var dir = Path.GetDirectoryName(localFilePath);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
 
-        int bytesRead;
-        while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)) != 0)
+        var tempPath = localFilePath + ".pstmp";
+
+        try
         {
-            await destination.WriteAsync(buffer, 0, bytesRead, cancellationToken);
+            await using var remoteStream = await _storage.GetAsync(file.Path, cancellationToken);
+            await using var fileStream = new FileStream(
+                tempPath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                bufferSize: 81920,
+                FileOptions.Asynchronous);
 
-            double speed = 0;
-            if (progressInfo.Stopwatch.Elapsed.TotalSeconds > 0)
+            await remoteStream.CopyToAsync(fileStream, cancellationToken);
+            await fileStream.FlushAsync(cancellationToken);
+            await fileStream.DisposeAsync();
+
+            // Verify hash
+            var hash = await ComputeFileHashAsync(tempPath, cancellationToken);
+            if (!string.Equals(hash, file.Hash, StringComparison.OrdinalIgnoreCase))
             {
-                speed = progressInfo.TotalRead / progressInfo.Stopwatch.Elapsed.TotalSeconds;
+                throw new InvalidDataException(
+                    $"Hash mismatch for {file.Path}. Expected: {file.Hash}, Actual: {hash}");
             }
 
-            progress?.Report(new DownloadProgress(progressInfo.FileName, progressInfo.TotalSize, progressInfo.TotalRead, speed));
+            // Atomic rename
+            if (File.Exists(localFilePath))
+                File.Delete(localFilePath);
+            File.Move(tempPath, localFilePath);
         }
-
-        ArrayPool<byte>.Shared.Return(buffer);
+        catch
+        {
+            try { File.Delete(tempPath); } catch { }
+            throw;
+        }
     }
 
-    public void ValidateFiles(string baseFolder, Func<ValidationResult> callback) =>
-        FileValidator.ValidateFiles(_manifest, baseFolder, callback);
-
-    private class ProgressInfo(long totalSize)
+    private async Task DownloadCompressedFileAsync(
+        string localFilePath,
+        ManifestFile file,
+        GameManifest manifest,
+        CancellationToken cancellationToken)
     {
-        public string FileName { get; set; }
-        public long TotalSize { get; } = totalSize;
-        public long TotalRead { get; set; }
-        public Stopwatch Stopwatch { get; } = new();
+        // For now, compressed downloads decompress in memory
+        // Could be improved with streaming decompression
+        var compressedPath = file.CompressedUrl ?? $"compressed/{file.Path}.zst";
+        var dir = Path.GetDirectoryName(localFilePath);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
+
+        var tempPath = localFilePath + ".pstmp";
+
+        try
+        {
+            await using var compressedStream = await _storage.GetAsync(compressedPath, cancellationToken);
+
+            // TODO: Add Zstandard decompression
+            // For now, fall back to full download
+            await DownloadFullFileAsync(localFilePath, file, manifest, cancellationToken);
+        }
+        catch
+        {
+            try { File.Delete(tempPath); } catch { }
+            throw;
+        }
+    }
+
+    private static async Task<string> ComputeFileHashAsync(string filePath, CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(
+            filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 81920,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+        var hash = await SHA256.HashDataAsync(stream, cancellationToken);
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     public void Dispose()
     {
-        Directory.Delete(_temporaryLocation);
+        if (_storage is IDisposable disposable)
+        {
+            disposable.Dispose();
+        }
     }
+}
+
+/// <summary>
+/// Options for patch client behavior.
+/// </summary>
+public sealed class PatchClientOptions
+{
+    /// <summary>
+    /// Threshold for delta vs compressed download decision.
+    /// If delta size >= compressed size * threshold, use compressed.
+    /// Default: 0.8 (use compressed if delta is 80%+ of compressed size)
+    /// </summary>
+    public double DeltaThreshold { get; init; } = 0.8;
+
+    /// <summary>
+    /// Options for file assembly.
+    /// </summary>
+    public AssemblyOptions AssemblyOptions { get; init; } = new();
+
+    /// <summary>
+    /// Maximum concurrent file operations.
+    /// </summary>
+    public int MaxConcurrency { get; init; } = 4;
+
+    /// <summary>
+    /// Whether to verify file hashes after patching.
+    /// </summary>
+    public bool VerifyAfterPatch { get; init; } = true;
+}
+
+/// <summary>
+/// Progress information during patching.
+/// </summary>
+public readonly record struct PatchProgress(
+    PatchPhase Phase,
+    int FilesComplete,
+    int FilesTotal,
+    long BytesComplete,
+    long BytesTotal,
+    string? CurrentFile,
+    double CurrentFileProgress)
+{
+    /// <summary>
+    /// Overall completion percentage (0.0 to 1.0).
+    /// </summary>
+    public double OverallPercentage => BytesTotal > 0 ? (double)BytesComplete / BytesTotal : 0;
+}
+
+/// <summary>
+/// Current phase of patching.
+/// </summary>
+public enum PatchPhase
+{
+    /// <summary>Starting patch operation.</summary>
+    Starting,
+    /// <summary>Processing files.</summary>
+    Processing,
+    /// <summary>Verifying files.</summary>
+    Verifying,
+    /// <summary>Patch complete.</summary>
+    Complete
+}
+
+/// <summary>
+/// Progress for an individual file.
+/// </summary>
+internal sealed class FileProgress
+{
+    public string Path { get; }
+    public long BytesComplete { get; set; }
+    public long BytesTotal { get; set; }
+
+    public FileProgress(string path) => Path = path;
 }

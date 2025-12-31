@@ -13,11 +13,12 @@
     <ItemGroup>
         <PackageReference Include="AWSSDK.S3" Version="4.0.16" />
         <PackageReference Include="Spectre.Console" Version="0.54.0" />
-        <PackageReference Include="System.IO.Hashing" Version="10.0.0"/>
+        <PackageReference Include="System.IO.Hashing" Version="10.0.1" />
+        <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.1" />
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\PatchSync.Common\PatchSync.Common.csproj"/>
-        <ProjectReference Include="..\PatchSync.SDK\PatchSync.SDK.csproj"/>
+        <ProjectReference Include="..\PatchSync.Common\PatchSync.Common.csproj" />
+        <ProjectReference Include="..\PatchSync.SDK\PatchSync.SDK.csproj" />
     </ItemGroup>
 </Project>

@@ -22,13 +22,28 @@ Do NOT attempt to refactor the existing code. Start clean.
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| **Chunking Algorithm** | FastCDC | Simplest (~25 lines core), normalized chunks, >1 GB/s |
-| **Vectorization** | No (MVP) | Network is bottleneck, not CPU |
-| **Build Tooling** | .NET port (same as client) | Identical algorithm everywhere |
+| **Chunking Algorithm** | FastCDC | Simplest (~25 lines core), normalized chunks, 2-3x faster than Buzhash |
+| **Vectorization** | No (MVP) | Network is bottleneck, not CPU; IChunker allows future VRAM/etc. |
+| **Build Tooling** | .NET CLI (NativeAOT) | Same algorithm client+server, single binary distribution |
 | **Index Format** | Custom PSI1 | Algorithm-aware headers, version-tagged |
-| **Desync Integration** | None (reference only) | Use for research, not runtime |
-| **Cross-file Matching** | IChunkSource abstraction | Local files as chunk sources |
+| **Cross-file Matching** | IChunkSource abstraction | Desync-inspired Seed mechanism for chunk reuse |
 | **Compressed Fallback** | Automatic selection | Delta vs compressed size comparison |
+| **Runtime** | .NET 10, NativeAOT | Single binary, no runtime dependency |
+
+### Why FastCDC over Buzhash (desync)?
+
+| Aspect | FastCDC | Buzhash (desync) |
+|--------|---------|------------------|
+| **Speed** | ~1-2 GB/s | ~400-600 MB/s |
+| **Chunk Distribution** | Normalized (uniform) | Geometric (skewed small) |
+| **Implementation** | 25 lines core | 50+ lines + window mgmt |
+| **Hash Type** | Gear (shift+add) | Rolling (rotate+xor) |
+| **Window** | None | 48-byte rolling |
+
+FastCDC's normalized chunking creates more uniform chunk sizes, which means:
+- More predictable signature file sizes
+- Better deduplication ratio on structured data (pak files, archives)
+- Fewer edge cases with tiny chunks
 
 ---
 
@@ -114,256 +129,86 @@ For a 1GB file with 16KB average chunks (~65,536 chunks):
 ```
 PatchSync/
 ├── src/
-│   ├── PatchSync.Common/          # Shared data structures
-│   │   ├── Chunking/              # CDC algorithm
-│   │   ├── Index/                 # .caibx format handling
+│   ├── PatchSync.Common/          # Shared data structures (NativeAOT compatible)
+│   │   ├── Chunking/              # FastCDC + IChunker interface
+│   │   ├── Signatures/            # PSI1 format handling
 │   │   ├── Manifest/              # Game manifest structures
 │   │   ├── Hashing/               # SHA256, XxHash3
 │   │   └── Storage/               # Storage provider abstractions
 │   │
-│   ├── PatchSync.SDK/             # Core client library
+│   ├── PatchSync.SDK/             # Core client library (NativeAOT compatible)
 │   │   ├── Client/                # Main PatchSyncClient
 │   │   ├── Delta/                 # Delta calculation
+│   │   ├── Sources/               # IChunkSource implementations
 │   │   ├── Assembly/              # File assembly from chunks
 │   │   └── Download/              # HTTP download handling
 │   │
-│   └── PatchSync.CLI/             # Command-line interface
+│   └── PatchSync.CLI/             # Command-line tool (NativeAOT, single binary)
 │       ├── Commands/
-│       │   ├── Build/             # Build signatures/manifest
-│       │   ├── Patch/             # Apply patches
-│       │   └── Verify/            # Verify installation
+│       │   ├── BuildCommand.cs    # Generate signatures/manifest
+│       │   ├── PatchCommand.cs    # Apply delta patches
+│       │   ├── VerifyCommand.cs   # Verify installation integrity
+│       │   └── InfoCommand.cs     # Display manifest/signature info
 │       └── Program.cs
 │
 ├── tools/
-│   └── desync/                    # Desync CLI wrapper scripts
+│   └── testvectors/               # FastCDC test vector generator (Go)
 │
 ├── tests/
-│   ├── PatchSync.Common.Tests/
-│   ├── PatchSync.SDK.Tests/
-│   └── PatchSync.Integration.Tests/
+│   ├── PatchSync.Tests/           # Unit + compatibility tests
+│   └── PatchSync.Benchmarks/      # Performance benchmarks
 │
 └── docs/
     ├── ANALYSIS.md
     ├── DECISIONS.md
-    ├── IMPLEMENTATION_PLAN.md
-    └── SIMILAR_TOOLS_RESEARCH.md
+    └── IMPLEMENTATION_PLAN.md
+```
+
+### NativeAOT Requirements
+
+All code must be NativeAOT compatible:
+- No reflection-based serialization (use source generators)
+- No dynamic code generation
+- Explicit JSON serialization contexts
+- Trim-safe code patterns
+
+```xml
+<!-- PatchSync.CLI.csproj -->
+<PropertyGroup>
+  <PublishAot>true</PublishAot>
+  <InvariantGlobalization>true</InvariantGlobalization>
+</PropertyGroup>
 ```
 
 ---
 
-## Phase 1: Foundation
+## Phase 1: Foundation ✅ COMPLETE
 
 ### Goal: Core data structures and CDC algorithm
 
-#### 1.1 IChunker Interface and Types
+#### 1.1 IChunker Interface and Types ✅
 
-Define the pluggable chunker abstraction:
+Implemented in `PatchSync.Common/Chunking/`:
+- `IChunker.cs` - Pluggable chunker interface
+- `IChunkerRegistry.cs` - Algorithm discovery interface
+- `ChunkingOptions` with validation
 
-```csharp
-// PatchSync.Common/Chunking/IChunker.cs
+#### 1.2 FastCDC Chunker ✅
 
-public interface IChunker
-{
-    string AlgorithmId { get; }
-    IEnumerable<ChunkBoundary> Chunk(Stream input, ChunkingOptions options);
-}
+Implemented in `PatchSync.Common/Chunking/FastCDCChunker.cs`:
+- Full port of fastcdc-go algorithm
+- Normalized chunking with two masks (MaskS/MaskL)
+- Zero-allocation patterns: `Span<T>`, `stackalloc`, `IncrementalHash`
+- Gear hash table matching fastcdc-go exactly
 
-public readonly record struct ChunkBoundary(long Offset, int Length, byte[] Hash);
+**Verified**: Test vectors generated from fastcdc-go, all 6 test cases pass.
 
-public sealed class ChunkingOptions
-{
-    public int MinSize { get; init; } = 4096;
-    public int AverageSize { get; init; } = 16384;
-    public int MaxSize { get; init; } = 65536;
-}
-```
+#### 1.3 ChunkerRegistry ✅
 
-#### 1.2 FastCDC Chunker Port (~50 lines core)
-
-Port fastcdc-go algorithm to C# (NOT desync's buzhash):
-
-```csharp
-// PatchSync.Common/Chunking/FastCDCChunker.cs
-
-public sealed class FastCDCChunker : IChunker
-{
-    public string AlgorithmId => "fastcdc-v1";
-
-    // Gear hash table - 256 random 64-bit values (same seed as fastcdc-go)
-    private static readonly ulong[] GearTable = GenerateGearTable(seed: 0);
-
-    public IEnumerable<ChunkBoundary> Chunk(Stream input, ChunkingOptions options)
-    {
-        // Normalized chunking with two masks:
-        // - MaskS (strict): Used below average size - harder to find boundary
-        // - MaskL (loose): Used above average size - easier to find boundary
-        // This creates uniform chunk size distribution around the average
-    }
-
-    private static int FindBoundary(ReadOnlySpan<byte> data, int minSize, int avgSize, int maxSize)
-    {
-        ulong fingerprint = 0;
-        int n = Math.Min(data.Length, maxSize);
-
-        // Skip minimum size (no boundary checks needed)
-        for (int i = 0; i < Math.Min(n, minSize); i++)
-            fingerprint = (fingerprint << 1) + GearTable[data[i]];
-
-        // Below average: use strict mask
-        ulong maskS = CalculateMask(avgSize, normalization: 2);
-        for (int i = minSize; i < Math.Min(n, avgSize); i++)
-        {
-            fingerprint = (fingerprint << 1) + GearTable[data[i]];
-            if ((fingerprint & maskS) == 0)
-                return i + 1;
-        }
-
-        // Above average: use loose mask
-        ulong maskL = CalculateMask(avgSize, normalization: -2);
-        for (int i = avgSize; i < n; i++)
-        {
-            fingerprint = (fingerprint << 1) + GearTable[data[i]];
-            if ((fingerprint & maskL) == 0)
-                return i + 1;
-        }
-
-        return n; // Force boundary at max size
-    }
-}
-```
-
-**Verification**: Generate test vectors from fastcdc-go, verify .NET produces identical boundaries.
-
-#### 1.3 ChunkerRegistry
-
-```csharp
-// PatchSync.Common/Chunking/ChunkerRegistry.cs
-
-public sealed class ChunkerRegistry : IChunkerRegistry
-{
-    private readonly Dictionary<string, Func<IChunker>> _factories = new()
-    {
-        ["fastcdc-v1"] = () => new FastCDCChunker(),
-        // Future: ["buzhash-casync-v1"] = () => new BuzhashChunker(),
-    };
-
-    public IReadOnlyList<string> SupportedAlgorithms => _factories.Keys.ToList();
-
-    public bool TryGetChunker(string algorithmId, out IChunker chunker)
-    {
-        if (_factories.TryGetValue(algorithmId, out var factory))
-        {
-            chunker = factory();
-            return true;
-        }
-        chunker = null!;
-        return false;
-    }
-
-    public IChunker GetPreferred(IEnumerable<string> available)
-    {
-        // Return first supported algorithm from available list
-        foreach (var alg in available)
-        {
-            if (TryGetChunker(alg, out var chunker))
-                return chunker;
-        }
-        throw new NotSupportedException("No supported chunking algorithms found");
-    }
-}
-```
-
-#### 1.4 PSI1 Signature Format
-
-```csharp
-// PatchSync.Common/Signatures/SignatureFile.cs
-
-public sealed class SignatureFile
-{
-    public const uint Magic = 0x31495350; // "PSI1" little-endian
-
-    public string AlgorithmId { get; init; }
-    public byte AlgorithmVersion { get; init; }
-    public int MinSize { get; init; }
-    public int AverageSize { get; init; }
-    public int MaxSize { get; init; }
-    public IReadOnlyList<SignatureChunk> Chunks { get; init; }
-
-    public static SignatureFile Read(Stream input) { /* ... */ }
-    public void Write(Stream output) { /* ... */ }
-}
-
-public readonly record struct SignatureChunk(
-    long Offset,    // Byte offset in file
-    int Length,     // Chunk length
-    byte[] Hash     // SHA256 hash (32 bytes)
-);
-```
-
-#### 1.5 Manifest Structure
-
-```csharp
-// PatchSync.Common/Manifest/GameManifest.cs
-
-public sealed class GameManifest
-{
-    public string Version { get; init; }
-    public DateTime BuildDate { get; init; }
-    public IReadOnlyList<string> SupportedAlgorithms { get; init; } // e.g., ["fastcdc-v1"]
-    public string PreferredAlgorithm { get; init; }
-    public string? FallbackUrl { get; init; }   // De novo install archive
-    public IReadOnlyList<ManifestFile> Files { get; init; }
-}
-
-public sealed class ManifestFile
-{
-    public string Path { get; init; }
-    public long Size { get; init; }
-    public long CompressedSize { get; init; }
-    public string Hash { get; init; }           // SHA256
-    public string SignatureUrl { get; init; }   // .psi1 signature file
-    public string? CompressedUrl { get; init; } // Optional .zst compressed file
-    public UpdateStrategy Strategy { get; init; }
-}
-
-public enum UpdateStrategy
-{
-    Delta,              // Use CDC delta patching
-    FullCompressed,     // Always download .zst
-    FullUncompressed,   // Always download raw
-    HashCheck,          // Download if hash mismatch (small files)
-    Skip                // Never update (user files)
-}
-```
-
-#### 1.6 Storage Provider Abstraction
-
-```csharp
-// PatchSync.Common/Storage/IStorageProvider.cs
-
-public interface IStorageProvider
-{
-    Task<Stream> GetAsync(string path, CancellationToken ct = default);
-
-    Task<Stream> GetRangeAsync(
-        string path,
-        long start,
-        long end,
-        CancellationToken ct = default);
-
-    Task<Stream> GetMultiRangeAsync(
-        string path,
-        IEnumerable<(long Start, long End)> ranges,
-        CancellationToken ct = default);
-
-    bool SupportsMultiRange { get; }
-}
-
-// Implementations
-public class HttpStorageProvider : IStorageProvider { }
-public class S3StorageProvider : IStorageProvider { }
-public class LocalStorageProvider : IStorageProvider { }
-```
+Implemented in `PatchSync.Common/Chunking/IChunkerRegistry.cs`:
+- Factory-based algorithm instantiation
+- Algorithm negotiation for client-server compatibility
+- Extensible for future algorithms (VRAM, etc.)
 
 ---
 
@@ -371,49 +216,47 @@ public class LocalStorageProvider : IStorageProvider { }
 
 ### Goal: Client-side delta calculation, cross-file matching, and download strategy
 
-#### 2.1 Cross-File Chunk Source
+#### 2.1 Cross-File Chunk Source (Desync Seed-Inspired)
+
+This is the key innovation from desync - the ability to find chunks across multiple local files:
 
 ```csharp
 // PatchSync.SDK/Sources/IChunkSource.cs
 
 public interface IChunkSource
 {
+    /// <summary>Try to find a chunk by its SHA256 hash</summary>
     bool TryGetChunk(ReadOnlySpan<byte> hash, out ChunkLocation location);
-    IEnumerable<ChunkMatch> FindMatches(IEnumerable<SignatureChunk> needed);
+
+    /// <summary>Build index of all chunks in this source</summary>
+    IReadOnlyDictionary<Hash256, ChunkLocation> GetChunkIndex();
 }
 
 public readonly record struct ChunkLocation(string FilePath, long Offset, int Length);
-public readonly record struct ChunkMatch(SignatureChunk Needed, ChunkLocation Source);
 ```
+
+**Use cases:**
+- Find chunks in the target file being updated (self-seed)
+- Find chunks in other game files (cross-file matching)
+- Find chunks in old pak files when assets moved between archives
 
 ```csharp
 // PatchSync.SDK/Sources/LocalFileSource.cs
-
 public sealed class LocalFileSource : IChunkSource
 {
-    private readonly string _filePath;
-    private readonly Dictionary<byte[], List<ChunkLocation>> _chunkIndex;
+    private readonly FrozenDictionary<Hash256, ChunkLocation> _index;
 
-    public static async Task<LocalFileSource> BuildAsync(
+    public static LocalFileSource Build(
         string filePath,
         IChunker chunker,
-        ChunkingOptions options,
-        CancellationToken ct = default)
+        ChunkingOptions options)
     {
-        // Chunk local file and build hash -> locations map
-        // Same hash can appear multiple times (duplicate chunks)
-    }
-
-    public bool TryGetChunk(ReadOnlySpan<byte> hash, out ChunkLocation location)
-    {
-        // Return first matching location
+        // Chunk local file and build hash -> location map
+        // Uses content-addressed hashing: same content = same hash
     }
 }
-```
 
-```csharp
 // PatchSync.SDK/Sources/CompositeChunkSource.cs
-
 public sealed class CompositeChunkSource : IChunkSource
 {
     private readonly List<IChunkSource> _sources = new();
@@ -422,7 +265,7 @@ public sealed class CompositeChunkSource : IChunkSource
 
     public bool TryGetChunk(ReadOnlySpan<byte> hash, out ChunkLocation location)
     {
-        // Try each source in order (target file first, then other local files)
+        // Priority order: target file first, then other local files
         foreach (var source in _sources)
         {
             if (source.TryGetChunk(hash, out location))
@@ -431,28 +274,6 @@ public sealed class CompositeChunkSource : IChunkSource
         location = default;
         return false;
     }
-}
-```
-
-#### 2.2 Chunk Index Builder
-
-```csharp
-// PatchSync.SDK/Delta/LocalChunkIndex.cs
-
-public sealed class LocalChunkIndex
-{
-    private readonly Dictionary<byte[], long> _chunks;
-
-    public static async Task<LocalChunkIndex> BuildAsync(
-        string filePath,
-        IChunker chunker,
-        ChunkingOptions options,
-        CancellationToken ct = default)
-    {
-        // Chunk local file and build hash -> offset map
-    }
-
-    public bool TryGetOffset(ReadOnlySpan<byte> hash, out long offset) { /* ... */ }
 }
 ```
 
@@ -698,234 +519,304 @@ public enum PatchPhase
 
 ---
 
-## Phase 5: CLI Tools (Week 9-10)
+## Phase 5: CLI Tool (NativeAOT)
 
-### Goal: Build and patch commands
+### Goal: Single-binary CLI for both build (server) and patch (client)
 
-#### 5.1 Build Command (wraps desync)
+The CLI uses the **same FastCDC implementation** for both building signatures and patching.
+This ensures perfect algorithm compatibility without external dependencies.
+
+#### 5.1 Build Command
 
 ```csharp
-// PatchSync.CLI/Commands/Build/BuildCommand.cs
+// PatchSync.CLI/Commands/BuildCommand.cs
 
-[Command("build")]
 public class BuildCommand
 {
-    [Option("-i|--input")]
-    public string InputPath { get; set; }
+    public required string InputPath { get; set; }
+    public required string OutputPath { get; set; }
+    public string? ManifestOverrides { get; set; }
+    public int MinChunkSize { get; set; } = 4096;
+    public int AvgChunkSize { get; set; } = 16384;
+    public int MaxChunkSize { get; set; } = 65536;
+    public bool Compress { get; set; } = true;
 
-    [Option("-o|--output")]
-    public string OutputPath { get; set; }
-
-    [Option("-m|--manifest")]
-    public string? InputManifest { get; set; }  // Optional overrides
-
-    public async Task<int> ExecuteAsync()
+    public async Task<int> ExecuteAsync(CancellationToken ct)
     {
         // 1. Scan input directory
         // 2. For each file:
-        //    a. Determine update strategy
-        //    b. Run desync to generate .caibx
+        //    a. Determine update strategy (delta, compressed, skip)
+        //    b. Generate PSI1 signature using FastCDC
         //    c. Optionally compress with zstd
-        // 3. Generate manifest.json
+        // 3. Generate manifest.json (with JSON source generator)
+        // 4. Copy files to output structure
     }
 }
 ```
 
-**Desync wrapper script** (tools/desync/build.ps1):
+**Build workflow (same code as client):**
 
-```powershell
-param(
-    [string]$InputFile,
-    [string]$OutputIndex,
-    [string]$ChunkStore
-)
+```
+patchsync build -i GameFolder -o CDNUpload
 
-desync make $OutputIndex $ChunkStore $InputFile
+Output:
+CDNUpload/
+├── manifest.json              # Game manifest
+├── files/
+│   ├── game.exe               # Raw files for byte-range
+│   └── assets.pak
+├── signatures/
+│   ├── game.exe.psi1          # FastCDC signatures
+│   └── assets.pak.psi1
+└── compressed/                # Optional zstd fallback
+    ├── game.exe.zst
+    └── assets.pak.zst
 ```
 
 #### 5.2 Patch Command
 
 ```csharp
-// PatchSync.CLI/Commands/Patch/PatchCommand.cs
+// PatchSync.CLI/Commands/PatchCommand.cs
 
-[Command("patch")]
 public class PatchCommand
 {
-    [Option("-u|--url")]
-    public string ManifestUrl { get; set; }
+    public required string ManifestUrl { get; set; }
+    public required string InstallPath { get; set; }
+    public bool Verify { get; set; } = true;
+    public int MaxConcurrency { get; set; } = 4;
 
-    [Option("-p|--path")]
-    public string InstallPath { get; set; }
-
-    public async Task<int> ExecuteAsync()
+    public async Task<int> ExecuteAsync(CancellationToken ct)
     {
-        var storage = new HttpStorageProvider(_options.BaseUrl);
+        var storage = new HttpStorageProvider(new Uri(ManifestUrl).GetLeftPart(UriPartial.Authority));
         var client = new PatchSyncClient(storage);
 
-        var manifest = await client.GetManifestAsync(ManifestUrl);
-        var plan = await client.CreatePlanAsync(manifest, InstallPath);
+        var manifest = await client.GetManifestAsync(ManifestUrl, ct);
+        var plan = await client.CreatePlanAsync(manifest, InstallPath, ct);
 
         Console.WriteLine($"Files to update: {plan.FilesToUpdate}");
-        Console.WriteLine($"Download size: {plan.DownloadSize}");
+        Console.WriteLine($"Download: {plan.BytesToDownload:N0} bytes");
+        Console.WriteLine($"Reuse local: {plan.BytesToCopy:N0} bytes");
 
-        await client.ApplyPatchAsync(plan, new ConsoleProgress());
+        await client.ApplyPatchAsync(plan, new ConsoleProgress(), ct);
     }
 }
 ```
 
----
+#### 5.3 Verify Command
 
-## Desync Integration Details
-
-### Build-Time Usage
-
-The build process uses desync CLI directly. No P/Invoke or shared library needed.
-
-**Build workflow:**
-
-```
-1. Developer runs: patchsync build -i GameFolder -o CDNUpload
-
-2. For each file in GameFolder:
-   a. Determine strategy (delta, compressed, skip)
-   b. If delta:
-      - Run: desync make GameFile.caibx ChunkStore GameFile
-      - This generates .caibx index and chunks
-   c. Copy original file to output (for byte-range requests)
-   d. Optionally compress with zstd
-
-3. Generate manifest.json with all file metadata
-
-4. Upload CDNUpload folder to CDN
-```
-
-**Why this works:**
-- Build servers are developer machines (can install desync)
-- No need to embed desync in .NET
-- Leverage desync's battle-tested chunking
-- Output is just static files
-
-### Client-Side Port
-
-The game launcher uses a .NET port of the CDC algorithm:
-
-**What to port from desync:**
-1. `chunker.go` → `BuzhashChunker.cs` (~200 lines)
-2. Index parsing (read .caibx files) (~100 lines)
-3. Hash computation (SHA512/256) (~50 lines)
-
-**What NOT to port:**
-- Chunk store (we use byte-ranges instead)
-- Seeds (simplified for game patching)
-- S3/GCS backends (we have HttpStorageProvider)
-- CLI infrastructure
-
-### Ensuring Algorithm Compatibility
-
-**Critical**: The .NET chunker MUST produce identical chunks to desync.
-
-Test strategy:
 ```csharp
-[Test]
-public async Task Chunker_ProducesIdenticalBoundaries_ToDesync()
+// PatchSync.CLI/Commands/VerifyCommand.cs
+
+public class VerifyCommand
 {
-    // Generate chunks with .NET implementation
-    var dotnetChunks = await ChunkFileAsync("testfile.bin");
+    public required string ManifestUrl { get; set; }
+    public required string InstallPath { get; set; }
+    public bool Repair { get; set; } = false;
 
-    // Generate chunks with desync CLI
-    var desyncChunks = await RunDesyncMakeAsync("testfile.bin");
-
-    // Compare
-    Assert.That(dotnetChunks, Is.EqualTo(desyncChunks));
+    public async Task<int> ExecuteAsync(CancellationToken ct)
+    {
+        // Verify all files match manifest hashes
+        // Optionally repair by re-downloading corrupted chunks
+    }
 }
 ```
 
-Key implementation details to match:
-- Hash table values (must be identical)
-- Discriminator formula (floating point precision)
-- Boundary condition (hash % discriminator == discriminator - 1)
-- Window rotation direction
+#### 5.4 Info Command
+
+```csharp
+// PatchSync.CLI/Commands/InfoCommand.cs
+
+public class InfoCommand
+{
+    public required string Path { get; set; }  // manifest.json or .psi1 file
+
+    public Task<int> ExecuteAsync()
+    {
+        // Display manifest or signature file details
+        // - Algorithm, chunk sizes, chunk count
+        // - File list with sizes and strategies
+    }
+}
+```
+
+#### 5.5 NativeAOT Configuration
+
+```xml
+<!-- PatchSync.CLI.csproj -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <StripSymbols>true</StripSymbols>
+    <OptimizationPreference>Size</OptimizationPreference>
+  </PropertyGroup>
+</Project>
+```
+
+**JSON Serialization (AOT-compatible):**
+
+```csharp
+// PatchSync.Common/Manifest/ManifestJsonContext.cs
+
+[JsonSerializable(typeof(GameManifest))]
+[JsonSerializable(typeof(ManifestFile))]
+[JsonSourceGenerationOptions(
+    PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
+    WriteIndented = true)]
+public partial class ManifestJsonContext : JsonSerializerContext { }
+```
+
+---
+
+## Desync-Inspired Features
+
+While we're not using desync directly, these features from desync are incorporated:
+
+### Cross-File Chunk Matching (Seed Mechanism)
+
+From desync's `FileSeed`:
+- Content-addressed chunks can be found across multiple local files
+- Enables chunk reuse when assets move between pak files
+- `CompositeChunkSource` implements this pattern
+
+### Parallel Assembly
+
+From desync's `AssembleFile`:
+- Multiple chunks downloaded concurrently
+- Configurable concurrency limit
+- Progress reporting per-chunk
+
+### Resumable Downloads
+
+From desync's `-k` flag:
+- Track which chunks have been downloaded
+- Resume from interruption without re-downloading
+- Verify partial downloads via chunk hashes
+
+### HTTP/2 Support
+
+From desync's HTTP store:
+- Enable HTTP/2 for multiplexed connections
+- Connection pooling for CDN efficiency
+
+```csharp
+var handler = new SocketsHttpHandler
+{
+    EnableMultipleHttp2Connections = true,
+    PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+};
+```
+
+### Range Request Coalescing
+
+Optimize HTTP byte-range requests:
+- Merge adjacent ranges within threshold (4KB gap)
+- Batch small chunks into single requests
+- Fall back to single-range when multi-range not supported
 
 ---
 
 ## Testing Strategy
 
-### Unit Tests
+### Unit Tests (PatchSync.Tests/)
 
 ```
-PatchSync.Common.Tests/
-├── Chunking/
-│   ├── BuzhashChunkerTests.cs    # Boundary detection
-│   ├── HashTableTests.cs         # Hash table verification
-│   └── CompatibilityTests.cs     # desync compatibility
-├── Index/
-│   └── CaibxIndexTests.cs        # Parse/write round-trip
-└── Manifest/
-    └── GameManifestTests.cs      # Serialization
+PatchSync.Tests/
+├── FastCDCCompatibilityTests.cs  # ✅ Verify against fastcdc-go
+├── ChunkerRegistryTests.cs       # Algorithm discovery
+├── SignatureFormatTests.cs       # PSI1 read/write round-trip
+├── ChunkingOptionsTests.cs       # Validation
+└── ManifestSerializationTests.cs # JSON source generator
 ```
 
 ### Integration Tests
 
 ```
-PatchSync.Integration.Tests/
+PatchSync.Tests/Integration/
 ├── DeltaScenarios/
 │   ├── AppendOnlyTest.cs         # File grows at end
 │   ├── InsertionTest.cs          # Data inserted in middle
 │   ├── DeletionTest.cs           # Data removed
-│   └── ModificationTest.cs       # Bytes changed in place
+│   ├── ModificationTest.cs       # Bytes changed in place
+│   └── CrossFileTest.cs          # Chunks move between files
 ├── StorageProviders/
 │   ├── HttpProviderTests.cs      # Against test server
-│   └── S3ProviderTests.cs        # Against LocalStack
+│   └── LocalProviderTests.cs     # Local file system
 └── EndToEnd/
     └── FullPatchCycleTests.cs    # Build → CDN → Patch
 ```
 
-### Performance Tests
+### Benchmarks (PatchSync.Benchmarks/)
 
-- 1GB file chunking: Target <1 second
-- 10GB game directory: Target <30 seconds analysis
+```csharp
+[MemoryDiagnoser]
+public class ChunkingBenchmarks
+{
+    [Params(1_000_000, 100_000_000, 1_000_000_000)]
+    public int FileSize { get; set; }
+
+    [Benchmark]
+    public int FastCDC_Chunk() => _chunker.Chunk(_stream, _options).Count();
+}
+```
+
+**Targets:**
+- 1GB file chunking: <1 second (>1 GB/s)
+- 10GB game directory analysis: <30 seconds
 - Download throughput: Saturate connection
 
 ---
 
 ## Milestones
 
-| Milestone | Target | Deliverable |
-|-----------|--------|-------------|
-| M1: Foundation | Week 2 | CDC chunker + index parsing + tests |
-| M2: Delta Engine | Week 4 | Local chunk index + delta calculation |
-| M3: Assembly | Week 6 | File assembly + byte-range downloads |
-| M4: SDK | Week 8 | PatchSyncClient with full API |
-| M5: CLI | Week 10 | Build + patch commands |
-| M6: Polish | Week 12 | Documentation, examples, perf tuning |
+| Milestone | Deliverable | Status |
+|-----------|-------------|--------|
+| M1: Foundation | FastCDC chunker + PSI1 format + tests | ✅ Complete |
+| M2: Delta Engine | IChunkSource + delta calculation + strategy selection | 🔄 Next |
+| M3: Assembly | File assembly + byte-range downloads | Pending |
+| M4: SDK | PatchSyncClient with full API | Pending |
+| M5: CLI | Build + patch + verify commands (NativeAOT) | Pending |
+| M6: Polish | Documentation, examples, perf tuning | Pending |
 
 ---
 
 ## Dependencies
 
 **Required:**
-- .NET 8.0 SDK
-- desync CLI (build server only)
-- zstd CLI (optional, for compression)
+- .NET 10 SDK (for latest performance features)
 
 **NuGet packages:**
-- `System.IO.Hashing` (XxHash, CRC32)
-- `System.IO.Compression` (zstd via ZstdSharp)
-- `System.Text.Json` (manifest serialization)
-- `Polly` (retry policies)
-- `Spectre.Console` (CLI UI)
-- `System.CommandLine` (CLI parsing)
+- `System.IO.Hashing` - XxHash3, CRC32 (built-in .NET 10)
+- `System.Text.Json` - Manifest serialization (source generators)
+- `ZstdSharp` - Zstandard compression (optional)
+- `Spectre.Console` - CLI progress/UI (optional)
+- `System.CommandLine` - CLI parsing
+
+**No external dependencies required** - FastCDC is fully implemented in .NET.
 
 ---
 
 ## Open Questions
 
-1. **Index format extension**: Do we need to extend .caibx for byte offsets, or is cumulative size sufficient?
+1. ~~**Index format extension**: Do we need to extend .caibx for byte offsets?~~
+   **Resolved**: Using custom PSI1 format with explicit offsets.
 
 2. **Chunk storage model**: For very large games (100GB+), should we support chunk store as option?
 
-3. **Parallel chunking**: Should client-side chunking be parallelized? (Currently single-threaded)
+3. **Parallel chunking**: Should client-side chunking be parallelized?
+   - Current FastCDC is single-threaded but >1 GB/s
+   - Network is the bottleneck, not CPU
 
 4. **Signature caching**: Should we cache chunk hashes of local files between sessions?
+   - Could speed up repeated patches
+   - Need invalidation strategy
 
-5. **Repair mode**: How to handle corrupted local files (re-download affected chunks)?
+5. **Repair mode**: How to handle corrupted local files?
+   - Re-chunk and identify bad chunks
+   - Re-download only corrupted chunks
+
+6. **GUI tool**: Should we build a GUI in addition to CLI?
+   - Could use AvaloniaUI for cross-platform
+   - Or provide SDK for launcher developers to embed

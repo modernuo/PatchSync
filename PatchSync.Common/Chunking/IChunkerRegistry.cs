@@ -45,6 +45,11 @@ public sealed class ChunkerRegistry : IChunkerRegistry
     private readonly Dictionary<string, Func<IChunker>> _factories;
 
     /// <summary>
+    /// Default registry with all built-in chunking algorithms.
+    /// </summary>
+    public static ChunkerRegistry Default { get; } = new();
+
+    /// <summary>
     /// Creates a registry with the default set of chunkers.
     /// </summary>
     public ChunkerRegistry() : this(GetDefaultFactories())

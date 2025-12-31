@@ -6,6 +6,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PatchSync.Common", "PatchSy
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PatchSync.SDK", "PatchSync.SDK\PatchSync.SDK.csproj", "{133A976B-525A-4BDD-9720-690C1CCB9392}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PatchSync.Tests", "PatchSync.Tests\PatchSync.Tests.csproj", "{B58A963B-7A5C-48B0-AC5F-ED5C9C98DED2}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -24,5 +26,9 @@ Global
 		{133A976B-525A-4BDD-9720-690C1CCB9392}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{133A976B-525A-4BDD-9720-690C1CCB9392}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{133A976B-525A-4BDD-9720-690C1CCB9392}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B58A963B-7A5C-48B0-AC5F-ED5C9C98DED2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B58A963B-7A5C-48B0-AC5F-ED5C9C98DED2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B58A963B-7A5C-48B0-AC5F-ED5C9C98DED2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B58A963B-7A5C-48B0-AC5F-ED5C9C98DED2}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
