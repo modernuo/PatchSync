@@ -36,7 +36,9 @@ public static class CliBuilder
         rootCommand.Add(BuildUploadCommand());
         rootCommand.Add(BuildStatusCommand());
         rootCommand.Add(BuildInfoCommand());
+#if FONT_PREVIEW
         rootCommand.Add(BuildFontsCommand());
+#endif
 
         // Root command handler (no subcommand = interactive mode)
         rootCommand.SetAction(async (parseResult, cancellationToken) =>
@@ -449,6 +451,7 @@ public static class CliBuilder
 
     #endregion
 
+#if FONT_PREVIEW
     #region Fonts Command
 
     private static Command BuildFontsCommand()
@@ -477,6 +480,7 @@ public static class CliBuilder
     }
 
     #endregion
+#endif
 
     #region Helpers
 

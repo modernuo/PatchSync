@@ -120,10 +120,7 @@ public static class CommandRegistry
     public static async Task<int> ShowInteractiveMenuAsync()
     {
         AnsiConsole.Clear();
-        AnsiConsole.Write(
-            new FigletText("PatchSync")
-                .Color(Color.Blue));
-
+        AnsiConsole.MarkupLine($"[blue]{Branding.Title}[/]");
         AnsiConsole.MarkupLine("[grey]Delta patching tool for game updates[/]\n");
 
         var choices = _commands

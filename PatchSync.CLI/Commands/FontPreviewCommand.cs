@@ -1,4 +1,5 @@
-using System.Net.Http;
+#if FONT_PREVIEW
+using Figgle;
 using Spectre.Console;
 
 namespace PatchSync.CLI.Commands;
@@ -17,7 +18,6 @@ public static class FontPreviewCommand
     private const string XeroBase = "https://raw.githubusercontent.com/xero/figlet-fonts/main/";
     private const string HimeiBase = "https://raw.githubusercontent.com/hIMEI29A/FigletFonts/master/src/";
     private const string PhrackerBase = "https://raw.githubusercontent.com/phracker/figlet-fonts/master/";
-    private const string PhMajerusBase = "https://raw.githubusercontent.com/PhMajerus/FIGfonts/main/fonts/";
 
     /// <summary>
     /// Available Figlet fonts - comprehensive list from multiple repositories.
@@ -365,36 +365,6 @@ public static class FontPreviewCommand
         ("Wet Letter", "wetletter.flf", XeroBase + "wetletter.flf"),
         ("Whimsy", "Whimsy.flf", XeroBase + "Whimsy.flf"),
         ("Wow", "Wow.flf", XeroBase + "Wow.flf"),
-
-        // === PhMajerus Modern Unicode Fonts ===
-        ("PHM Beyond Blue", "phm-beyond-blue.flf", PhMajerusBase + "beyond-blue.flf"),
-        ("PHM BeyondNeo Blue", "phm-beyondneo-blue.flf", PhMajerusBase + "phm-beyondneo-blue.flf"),
-        ("PHM BeyondNeo Cyan", "phm-beyondneo-cyan.flf", PhMajerusBase + "phm-beyondneo-cyan.flf"),
-        ("PHM BeyondNeo Gold", "phm-beyondneo-gold.flf", PhMajerusBase + "phm-beyondneo-gold.flf"),
-        ("PHM BeyondNeo Green", "phm-beyondneo-green.flf", PhMajerusBase + "phm-beyondneo-green.flf"),
-        ("PHM BeyondNeo Mono", "phm-beyondneo-mono.flf", PhMajerusBase + "phm-beyondneo-mono.flf"),
-        ("PHM BeyondNeo Orange", "phm-beyondneo-orange.flf", PhMajerusBase + "phm-beyondneo-orange.flf"),
-        ("PHM BeyondNeo Pink", "phm-beyondneo-pink.flf", PhMajerusBase + "phm-beyondneo-pink.flf"),
-        ("PHM BeyondNeo Purple", "phm-beyondneo-purple.flf", PhMajerusBase + "phm-beyondneo-purple.flf"),
-        ("PHM BeyondNeo Red", "phm-beyondneo-red.flf", PhMajerusBase + "phm-beyondneo-red.flf"),
-        ("PHM BeyondNeo Silver", "phm-beyondneo-silver.flf", PhMajerusBase + "phm-beyondneo-silver.flf"),
-        ("PHM BeyondNeo Yellow", "phm-beyondneo-yellow.flf", PhMajerusBase + "phm-beyondneo-yellow.flf"),
-        ("PHM Blocky", "phm-blocky.flf", PhMajerusBase + "phm-blocky.flf"),
-        ("PHM Blocky Reverse", "phm-blocky-reverse.flf", PhMajerusBase + "phm-blocky-reverse.flf"),
-        ("PHM C64", "phm-c64.flf", PhMajerusBase + "phm-c64.flf"),
-        ("PHM CGA", "phm-cga.flf", PhMajerusBase + "phm-cga.flf"),
-        ("PHM Chisel", "phm-chisel.flf", PhMajerusBase + "phm-chisel.flf"),
-        ("PHM DOSV", "phm-dosv.flf", PhMajerusBase + "phm-dosv.flf"),
-        ("PHM HP2640 LargeType", "phm-hp2640-largetype.flf", PhMajerusBase + "hp2640-largetype.flf"),
-        ("PHM LargeType", "phm-largetype.flf", PhMajerusBase + "phm-largetype.flf"),
-        ("PHM LargeType ASCII", "phm-largetype-ascii.flf", PhMajerusBase + "phm-largetype-ASCII.flf"),
-        ("PHM LCD Matrix", "phm-lcdmatrix.flf", PhMajerusBase + "phm-lcdmatrix.flf"),
-        ("PHM Rounded", "phm-rounded.flf", PhMajerusBase + "phm-rounded.flf"),
-        ("PHM Shinonome", "phm-shinonome.flf", PhMajerusBase + "phm-shinonome.flf"),
-        ("PHM Slanted", "phm-slanted.flf", PhMajerusBase + "phm-slanted.flf"),
-        ("PHM SmallVT", "phm-smallvt.flf", PhMajerusBase + "phm-smallvt.flf"),
-        ("PHM VGA", "phm-vga.flf", PhMajerusBase + "phm-vga.flf"),
-        ("PHM VGA Square", "phm-vga-square.flf", PhMajerusBase + "phm-vga-square.flf"),
     ];
 
     /// <summary>
@@ -426,7 +396,11 @@ public static class FontPreviewCommand
     ];
 
     private static readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(15) };
-    private static readonly Dictionary<string, FigletFont?> _fontCache = new();
+
+    // Font loading results
+    private enum FontBackend { None, Spectre, Figgle }
+    private static readonly Dictionary<string, (FontBackend Backend, FigletFont? Spectre, FiggleFont? Figgle)> _fontCache = new();
+    private static readonly HashSet<string> _downloadFailed = new();
 
     public static Task<int> RunAsync(string[] args)
     {
@@ -578,14 +552,18 @@ public static class FontPreviewCommand
         // Render the preview
         try
         {
-            var font = GetOrDownloadFont(fontIndex);
-            if (font == null && _incompatibleFonts.Contains(AvailableFonts[fontIndex].File))
+            var (backend, spectreFont, figgleFont) = GetOrDownloadFont(fontIndex);
+            if (backend == FontBackend.None)
             {
-                AnsiConsole.MarkupLine("[yellow]This font is incompatible with Spectre.Console's parser.[/]");
+                AnsiConsole.MarkupLine("[yellow]This font is incompatible with both rendering backends.[/]");
                 AnsiConsole.MarkupLine("[grey]Using default font instead:[/]");
                 AnsiConsole.WriteLine();
             }
-            RenderWithStyle(text, font, color, decoration);
+            else if (backend == FontBackend.Figgle)
+            {
+                AnsiConsole.MarkupLine("[grey]Using Figgle backend[/]");
+            }
+            RenderWithStyle(text, backend, spectreFont, figgleFont, color, decoration);
         }
         catch (Exception ex)
         {
@@ -624,7 +602,7 @@ public static class FontPreviewCommand
 
         for (int i = 0; i < lines; i++)
         {
-            var fontLine = "";
+            string fontLine;
             var styleLine = "";
 
             var fi = fontStart + i;
@@ -657,142 +635,225 @@ public static class FontPreviewCommand
         }
     }
 
-    // Track fonts that are incompatible with Spectre.Console's parser
-    private static readonly HashSet<string> _incompatibleFonts = new();
-    private const string IncompatibleMarker = ".incompatible";
-
-    private static FigletFont? GetOrDownloadFont(int fontIndex)
+    /// <summary>
+    /// Gets or downloads a font, trying Spectre first then Figgle as fallback.
+    /// Returns the backend type and caches the result.
+    /// </summary>
+    private static (FontBackend Backend, FigletFont? Spectre, FiggleFont? Figgle) GetOrDownloadFont(int fontIndex)
     {
         var (name, file, url) = AvailableFonts[fontIndex];
         var cachePath = Path.Combine(FontCacheDir, file);
-        var incompatiblePath = cachePath + IncompatibleMarker;
 
         // Check memory cache
-        if (_fontCache.TryGetValue(file, out var cachedFont))
-            return cachedFont;
+        if (_fontCache.TryGetValue(file, out var cached))
+            return cached;
 
-        // Check if marked as incompatible
-        if (_incompatibleFonts.Contains(file) || File.Exists(incompatiblePath))
-        {
-            _incompatibleFonts.Add(file);
-            _fontCache[file] = null;
-            return null;
-        }
+        // Check if download already failed
+        if (_downloadFailed.Contains(file))
+            return (FontBackend.None, null, null);
 
-        // Check disk cache
-        if (File.Exists(cachePath))
+        // Ensure font file exists (download if needed)
+        if (!File.Exists(cachePath))
         {
             try
             {
-                var font = FigletFont.Load(cachePath);
-                _fontCache[file] = font;
-                return font;
+                AnsiConsole.MarkupLine($"[grey]Downloading font: {name}...[/]");
+                var content = _httpClient.GetStringAsync(url).GetAwaiter().GetResult();
+
+                var dir = Path.GetDirectoryName(cachePath);
+                if (!string.IsNullOrEmpty(dir))
+                    Directory.CreateDirectory(dir);
+
+                File.WriteAllText(cachePath, content);
             }
-            catch
+            catch (Exception ex)
             {
-                // Font file exists but is incompatible with Spectre.Console
-                MarkAsIncompatible(file, incompatiblePath);
-                return null;
+                AnsiConsole.MarkupLine($"[yellow]Download failed: {Markup.Escape(ex.Message)}[/]");
+                _downloadFailed.Add(file);
+                var none = (FontBackend.None, (FigletFont?)null, (FiggleFont?)null);
+                _fontCache[file] = none;
+                return none;
             }
         }
 
-        // Download font
+        // Try Spectre first
         try
         {
-            AnsiConsole.MarkupLine($"[grey]Downloading font: {name}...[/]");
-            var content = _httpClient.GetStringAsync(url).GetAwaiter().GetResult();
+            var spectreFont = FigletFont.Load(cachePath);
 
-            // Ensure parent directory exists (for nested filenames)
-            var dir = Path.GetDirectoryName(cachePath);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-
-            File.WriteAllText(cachePath, content);
-
-            // Try to parse the font
-            try
+            // Test if it actually renders something
+            var testRender = RenderSpectreToString("Test", spectreFont);
+            if (!string.IsNullOrWhiteSpace(testRender) && testRender.Any(c => !char.IsWhiteSpace(c)))
             {
-                var font = FigletFont.Load(cachePath);
-                _fontCache[file] = font;
-                return font;
+                var result = (FontBackend.Spectre, (FigletFont?)spectreFont, (FiggleFont?)null);
+                _fontCache[file] = result;
+                return result;
             }
-            catch (Exception parseEx)
-            {
-                // Downloaded but incompatible with Spectre.Console parser
-                AnsiConsole.MarkupLine($"[yellow]Font incompatible: {Markup.Escape(parseEx.Message)}[/]");
-                MarkAsIncompatible(file, incompatiblePath);
-                return null;
-            }
+            // Spectre parsed but rendered empty, try Figgle
         }
-        catch (HttpRequestException ex)
+        catch
         {
-            AnsiConsole.MarkupLine($"[yellow]Download failed: {Markup.Escape(ex.Message)}[/]");
-            _fontCache[file] = null;
-            return null;
+            // Spectre failed to parse, try Figgle
+        }
+
+        // Try Figgle as fallback
+        try
+        {
+            using var fontStream = File.OpenRead(cachePath);
+            var figgleFont = FiggleFontParser.Parse(fontStream);
+
+            // Test if it renders something
+            var testRender = figgleFont.Render("Test");
+            if (!string.IsNullOrWhiteSpace(testRender) && testRender.Any(c => !char.IsWhiteSpace(c)))
+            {
+                var result = (FontBackend.Figgle, (FigletFont?)null, figgleFont);
+                _fontCache[file] = result;
+                AnsiConsole.MarkupLine($"[grey]Using Figgle backend for: {name}[/]");
+                return result;
+            }
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[yellow]Error: {Markup.Escape(ex.Message)}[/]");
-            _fontCache[file] = null;
-            return null;
+            AnsiConsole.MarkupLine($"[yellow]Font incompatible with both backends: {Markup.Escape(ex.Message)}[/]");
         }
+
+        // Neither worked
+        var failed = (FontBackend.None, (FigletFont?)null, (FiggleFont?)null);
+        _fontCache[file] = failed;
+        return failed;
     }
 
-    private static void MarkAsIncompatible(string file, string incompatiblePath)
+    /// <summary>
+    /// Renders text using Spectre FigletText and captures as plain string
+    /// </summary>
+    private static string RenderSpectreToString(string text, FigletFont font)
     {
-        _incompatibleFonts.Add(file);
-        _fontCache[file] = null;
-        // Create marker file so we don't keep re-trying
-        try { File.WriteAllText(incompatiblePath, "Incompatible with Spectre.Console FigletFont parser"); }
-        catch { /* ignore */ }
+        var figletText = new FigletText(font, text);
+        var writer = new StringWriter();
+        var console = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Out = new AnsiConsoleOutput(writer),
+            ColorSystem = ColorSystemSupport.NoColors
+        });
+        console.Write(figletText);
+        return writer.ToString();
     }
 
-    private static void RenderWithStyle(string text, FigletFont? font, Color color, string? decoration)
+    private static void RenderWithStyle(string text, FontBackend backend, FigletFont? spectreFont, FiggleFont? figgleFont, Color color, string? decoration)
     {
-        var figlet = font != null
-            ? new FigletText(font, text).Color(color)
-            : new FigletText(text).Color(color);
+        // For Figgle backend, we render text directly with colors applied per-line
+        // For Spectre backend, we use FigletText as before
+        void WriteColoredText(string rendered)
+        {
+            var lines = rendered.Split('\n');
+            foreach (var line in lines)
+            {
+                if (!string.IsNullOrEmpty(line))
+                    AnsiConsole.MarkupLine($"[{color.ToMarkup()}]{Markup.Escape(line.TrimEnd('\r'))}[/]");
+                else
+                    AnsiConsole.WriteLine();
+            }
+        }
+
+        void WriteSpectreOrFiggle()
+        {
+            if (backend == FontBackend.Figgle && figgleFont != null)
+            {
+                var rendered = figgleFont.Render(text);
+                WriteColoredText(rendered);
+            }
+            else if (backend == FontBackend.Spectre && spectreFont != null)
+            {
+                var figlet = new FigletText(spectreFont, text).Color(color);
+                AnsiConsole.Write(figlet);
+            }
+            else
+            {
+                // Fallback to default Spectre font
+                var figlet = new FigletText(text).Color(color);
+                AnsiConsole.Write(figlet);
+            }
+        }
 
         switch (decoration)
         {
             case "line":
-                AnsiConsole.Write(figlet);
+                WriteSpectreOrFiggle();
                 AnsiConsole.MarkupLine($"[{color.ToMarkup()}]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/]");
                 break;
 
             case "box-double":
-                var panelDouble = new Panel(figlet)
-                    .Border(BoxBorder.Double)
-                    .BorderColor(color)
-                    .Padding(1, 0);
-                AnsiConsole.Write(panelDouble);
+                if (backend == FontBackend.Figgle && figgleFont != null)
+                {
+                    var rendered = figgleFont.Render(text);
+                    var panel = new Panel(new Markup($"[{color.ToMarkup()}]{Markup.Escape(rendered)}[/]"))
+                        .Border(BoxBorder.Double)
+                        .BorderColor(color)
+                        .Padding(1, 0);
+                    AnsiConsole.Write(panel);
+                }
+                else
+                {
+                    var figlet = spectreFont != null ? new FigletText(spectreFont, text).Color(color) : new FigletText(text).Color(color);
+                    var panel = new Panel(figlet)
+                        .Border(BoxBorder.Double)
+                        .BorderColor(color)
+                        .Padding(1, 0);
+                    AnsiConsole.Write(panel);
+                }
                 break;
 
             case "box-heavy":
-                var panelHeavy = new Panel(figlet)
-                    .Border(BoxBorder.Heavy)
-                    .BorderColor(color)
-                    .Padding(1, 0);
-                AnsiConsole.Write(panelHeavy);
+                if (backend == FontBackend.Figgle && figgleFont != null)
+                {
+                    var rendered = figgleFont.Render(text);
+                    var panel = new Panel(new Markup($"[{color.ToMarkup()}]{Markup.Escape(rendered)}[/]"))
+                        .Border(BoxBorder.Heavy)
+                        .BorderColor(color)
+                        .Padding(1, 0);
+                    AnsiConsole.Write(panel);
+                }
+                else
+                {
+                    var figlet = spectreFont != null ? new FigletText(spectreFont, text).Color(color) : new FigletText(text).Color(color);
+                    var panel = new Panel(figlet)
+                        .Border(BoxBorder.Heavy)
+                        .BorderColor(color)
+                        .Padding(1, 0);
+                    AnsiConsole.Write(panel);
+                }
                 break;
 
             case "box-rounded":
-                var panelRounded = new Panel(figlet)
-                    .Border(BoxBorder.Rounded)
-                    .BorderColor(color)
-                    .Padding(1, 0);
-                AnsiConsole.Write(panelRounded);
+                if (backend == FontBackend.Figgle && figgleFont != null)
+                {
+                    var rendered = figgleFont.Render(text);
+                    var panel = new Panel(new Markup($"[{color.ToMarkup()}]{Markup.Escape(rendered)}[/]"))
+                        .Border(BoxBorder.Rounded)
+                        .BorderColor(color)
+                        .Padding(1, 0);
+                    AnsiConsole.Write(panel);
+                }
+                else
+                {
+                    var figlet = spectreFont != null ? new FigletText(spectreFont, text).Color(color) : new FigletText(text).Color(color);
+                    var panel = new Panel(figlet)
+                        .Border(BoxBorder.Rounded)
+                        .BorderColor(color)
+                        .Padding(1, 0);
+                    AnsiConsole.Write(panel);
+                }
                 break;
 
             case "cyber":
                 AnsiConsole.MarkupLine("[fuchsia]▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓[/]");
-                AnsiConsole.Write(figlet);
+                WriteSpectreOrFiggle();
                 AnsiConsole.MarkupLine("[fuchsia]▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓[/]");
                 break;
 
             case "glitch":
                 AnsiConsole.MarkupLine("[red on black]█▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀█[/]");
-                AnsiConsole.Write(figlet);
+                WriteSpectreOrFiggle();
                 AnsiConsole.MarkupLine("[cyan]░▒▓█▓▒░[/][red]▒▓█▓▒░[/][green]▒▓█▓▒░[/][cyan]▒▓█▓▒░[/][red]▒▓█▓▒░[/][green]▒▓█▓▒░[/][cyan]▒▓█▓▒░[/][red]▒▓█▓▒░[/][green]▒▓█▓▒░[/]");
                 break;
 
@@ -800,7 +861,7 @@ public static class FontPreviewCommand
                 AnsiConsole.MarkupLine("[green]┌─────────────────────────────────────────────────────────────────────────┐[/]");
                 AnsiConsole.MarkupLine("[green]│[/] [black on green] SYSTEM READY [/]                                                       [green]│[/]");
                 AnsiConsole.MarkupLine("[green]├─────────────────────────────────────────────────────────────────────────┤[/]");
-                AnsiConsole.Write(figlet);
+                WriteSpectreOrFiggle();
                 AnsiConsole.MarkupLine("[green]└─────────────────────────────────────────────────────────────────────────┘[/]");
                 break;
 
@@ -809,29 +870,29 @@ public static class FontPreviewCommand
                 AnsiConsole.MarkupLine("[green]> LOADING SYSTEM...[/]");
                 AnsiConsole.MarkupLine("[green]> ACCESS GRANTED[/]");
                 AnsiConsole.WriteLine();
-                AnsiConsole.Write(figlet);
+                WriteSpectreOrFiggle();
                 AnsiConsole.MarkupLine("[green]> _[/]");
                 break;
 
             case "neon":
                 AnsiConsole.MarkupLine("[grey]     ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓[/]");
-                AnsiConsole.Write(figlet);
+                WriteSpectreOrFiggle();
                 AnsiConsole.MarkupLine("[grey]     ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛[/]");
                 AnsiConsole.MarkupLine("[magenta1]                    ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧[/]");
                 break;
 
             case "rainbow-gradient":
-                RenderRainbowGradient(text, font);
+                RenderRainbowGradient(text, backend, spectreFont, figgleFont);
                 break;
 
             case "rainbow-bars":
                 AnsiConsole.MarkupLine("[red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/]");
-                RenderRainbowGradient(text, font);
+                RenderRainbowGradient(text, backend, spectreFont, figgleFont);
                 AnsiConsole.MarkupLine("[purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/]");
                 break;
 
             default:
-                AnsiConsole.Write(figlet);
+                WriteSpectreOrFiggle();
                 break;
         }
     }
@@ -854,22 +915,33 @@ public static class FontPreviewCommand
     /// <summary>
     /// Renders figlet text with a diagonal rainbow gradient
     /// </summary>
-    private static void RenderRainbowGradient(string text, FigletFont? font)
+    private static void RenderRainbowGradient(string text, FontBackend backend, FigletFont? spectreFont, FiggleFont? figgleFont)
     {
-        // Render figlet to string first
-        var figletText = font != null
-            ? new FigletText(font, text)
-            : new FigletText(text);
+        string[] lines;
 
-        // Capture the figlet output as plain text
-        var writer = new StringWriter();
-        var console = AnsiConsole.Create(new AnsiConsoleSettings
+        if (backend == FontBackend.Figgle && figgleFont != null)
         {
-            Out = new AnsiConsoleOutput(writer),
-            ColorSystem = ColorSystemSupport.NoColors
-        });
-        console.Write(figletText);
-        var lines = writer.ToString().Split(Environment.NewLine, StringSplitOptions.None);
+            // Use Figgle directly
+            var rendered = figgleFont.Render(text);
+            lines = rendered.Split('\n');
+        }
+        else
+        {
+            // Render Spectre figlet to string first
+            var figletText = spectreFont != null
+                ? new FigletText(spectreFont, text)
+                : new FigletText(text);
+
+            // Capture the figlet output as plain text
+            var writer = new StringWriter();
+            var console = AnsiConsole.Create(new AnsiConsoleSettings
+            {
+                Out = new AnsiConsoleOutput(writer),
+                ColorSystem = ColorSystemSupport.NoColors
+            });
+            console.Write(figletText);
+            lines = writer.ToString().Split(Environment.NewLine);
+        }
 
         // Find dimensions for consistent diagonal coloring
         var maxWidth = lines.Max(l => l.Length);
@@ -925,8 +997,12 @@ public static class FontPreviewCommand
 
         try
         {
-            var font = GetOrDownloadFont(fontIndex);
-            RenderWithStyle(text, font, color, decoration);
+            var (backend, spectreFont, figgleFont) = GetOrDownloadFont(fontIndex);
+            if (backend == FontBackend.Figgle)
+            {
+                AnsiConsole.MarkupLine("[grey]Using Figgle backend[/]");
+            }
+            RenderWithStyle(text, backend, spectreFont, figgleFont, color, decoration);
         }
         catch (Exception ex)
         {
@@ -996,3 +1072,4 @@ public static class FontPreviewCommand
         AnsiConsole.MarkupLine("  patchsync fonts --text \"My App\"");
     }
 }
+#endif

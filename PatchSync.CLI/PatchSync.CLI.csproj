@@ -10,8 +10,15 @@
         <PublishAot>true</PublishAot>
     </PropertyGroup>
 
+    <!-- Font preview tool - Debug only, excluded from Release/AOT builds -->
+    <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+        <DefineConstants>$(DefineConstants);FONT_PREVIEW</DefineConstants>
+    </PropertyGroup>
+
     <ItemGroup>
         <PackageReference Include="AWSSDK.S3" Version="4.0.16" />
+        <!-- Figgle only needed for font preview in debug mode -->
+        <PackageReference Include="Figgle" Version="0.6.5" Condition="'$(Configuration)' == 'Debug'" />
         <PackageReference Include="Spectre.Console" Version="0.54.0" />
         <PackageReference Include="System.CommandLine" Version="2.0.1" />
         <PackageReference Include="System.IO.Hashing" Version="10.0.1" />

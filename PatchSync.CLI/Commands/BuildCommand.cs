@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using PatchSync.CLI.Build;
 using PatchSync.CLI.Prompts;
 using PatchSync.CLI.Workspace;
 using PatchSync.Common.Chunking;
@@ -176,7 +177,8 @@ public static class BuildCommand
         return await ExecuteWorkspaceModeAsync(
             channel, version, inputPath, notes, tags,
             force: false, dryRun: false,
-            algorithmOverride: null, minChunkOverride: 0, avgChunkOverride: 0, maxChunkOverride: 0);
+            algorithmOverride: null, minChunkOverride: 0, avgChunkOverride: 0, maxChunkOverride: 0,
+            existingManager: manager);
     }
 
     private static async Task<string> PromptForInputPathAsync()
@@ -298,10 +300,11 @@ public static class BuildCommand
         string? algorithmOverride,
         int minChunkOverride,
         int avgChunkOverride,
-        int maxChunkOverride)
+        int maxChunkOverride,
+        WorkspaceManager? existingManager = null)
     {
-        // Find workspace
-        var manager = WorkspaceManager.FindWorkspace(Directory.GetCurrentDirectory());
+        // Use existing manager or find workspace
+        var manager = existingManager ?? WorkspaceManager.FindWorkspace(Directory.GetCurrentDirectory());
         if (manager == null || !manager.Exists)
         {
             AnsiConsole.MarkupLine("[red]No workspace found.[/]");
@@ -413,49 +416,35 @@ public static class BuildCommand
         var sigDir = manager.GetSignaturesPath(channel, version);
         Directory.CreateDirectory(sigDir);
 
-        var manifestGenerator = new ManifestGenerator(chunker!, options);
-        var generatorOptions = new ManifestGeneratorOptions
+        var parallelBuilder = new ParallelSignatureBuilder(chunker!, options);
+        var buildOptions = new ParallelBuildOptions
         {
             MinDeltaSize = minDeltaSize,
             GenerateSignatures = true,
             SignatureOutputDirectory = sigDir
         };
 
+        var workerCount = parallelBuilder.MaxConcurrency;
         AnsiConsole.MarkupLine($"[blue]Building:[/] {channelConfig.DisplayName} v{version}");
         AnsiConsole.MarkupLine($"[blue]Input:[/] {inputPath}");
         AnsiConsole.MarkupLine($"[blue]Algorithm:[/] {algorithm}");
+        AnsiConsole.MarkupLine($"[blue]Workers:[/] {workerCount}");
         AnsiConsole.WriteLine();
 
-        var manifest = await AnsiConsole.Progress()
-            .AutoRefresh(true)
+        GameManifest manifest = null!;
+        await AnsiConsole.Live(new Text("Starting parallel build..."))
             .AutoClear(false)
-            .HideCompleted(false)
-            .Columns(
-                new TaskDescriptionColumn(),
-                new ProgressBarColumn(),
-                new PercentageColumn(),
-                new SpinnerColumn())
             .StartAsync(async ctx =>
             {
-                var task = ctx.AddTask("Processing files", autoStart: true);
+                var display = new LiveBuildProgress(ctx, workerCount);
+                var progress = new Progress<ParallelBuildProgress>(p => display.Update(p));
 
-                var progress = new Progress<ManifestGeneratorProgress>(p =>
-                {
-                    task.Description = p.CurrentFile ?? "Processing...";
-                    task.Value = p.Percentage * 100;
-                });
-
-                var result = await manifestGenerator.GenerateManifestAsync(
+                manifest = await parallelBuilder.BuildAsync(
                     inputPath,
                     version,
                     "", // Base URL will be set at publish time
-                    generatorOptions,
+                    buildOptions,
                     progress);
-
-                task.Value = 100;
-                task.Description = "Complete";
-
-                return result;
             });
 
         stopwatch.Stop();
@@ -628,9 +617,8 @@ public static class BuildCommand
         var sigDir = Path.Combine(outputPath, "signatures");
         Directory.CreateDirectory(sigDir);
 
-        var manifestGenerator = new ManifestGenerator(chunker!, options);
-
-        var generatorOptions = new ManifestGeneratorOptions
+        var parallelBuilder = new ParallelSignatureBuilder(chunker!, options);
+        var buildOptions = new ParallelBuildOptions
         {
             MinDeltaSize = minDeltaSize,
             GenerateSignatures = true,
@@ -638,42 +626,28 @@ public static class BuildCommand
             FallbackUrl = fallbackUrl
         };
 
+        var workerCount = parallelBuilder.MaxConcurrency;
         AnsiConsole.MarkupLine($"[blue]Building manifest for:[/] {inputPath}");
         AnsiConsole.MarkupLine($"[blue]Output directory:[/] {outputPath}");
         AnsiConsole.MarkupLine($"[blue]Version:[/] {version}");
         AnsiConsole.MarkupLine($"[blue]Algorithm:[/] {algorithm}");
+        AnsiConsole.MarkupLine($"[blue]Workers:[/] {workerCount}");
         AnsiConsole.WriteLine();
 
-        var manifest = await AnsiConsole.Progress()
-            .AutoRefresh(true)
+        GameManifest manifest = null!;
+        await AnsiConsole.Live(new Text("Starting parallel build..."))
             .AutoClear(false)
-            .HideCompleted(false)
-            .Columns(
-                new TaskDescriptionColumn(),
-                new ProgressBarColumn(),
-                new PercentageColumn(),
-                new SpinnerColumn())
             .StartAsync(async ctx =>
             {
-                var task = ctx.AddTask("Processing files", autoStart: true);
+                var display = new LiveBuildProgress(ctx, workerCount);
+                var progress = new Progress<ParallelBuildProgress>(p => display.Update(p));
 
-                var progress = new Progress<ManifestGeneratorProgress>(p =>
-                {
-                    task.Description = p.CurrentFile ?? "Processing...";
-                    task.Value = p.Percentage * 100;
-                });
-
-                var result = await manifestGenerator.GenerateManifestAsync(
+                manifest = await parallelBuilder.BuildAsync(
                     inputPath,
                     version,
                     baseUrl,
-                    generatorOptions,
+                    buildOptions,
                     progress);
-
-                task.Value = 100;
-                task.Description = "Complete";
-
-                return result;
             });
 
         // Write manifest

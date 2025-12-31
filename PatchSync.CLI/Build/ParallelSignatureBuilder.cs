@@ -1,0 +1,275 @@
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using PatchSync.Common.Chunking;
+using PatchSync.Common.Manifest;
+using PatchSync.SDK.Signatures;
+
+namespace PatchSync.CLI.Build;
+
+/// <summary>
+/// Progress information during parallel build.
+/// </summary>
+public readonly record struct ParallelBuildProgress(
+    int SlotIndex,
+    string? FileName,
+    double FileProgress,
+    int FilesComplete,
+    int FilesTotal,
+    long BytesProcessed,
+    long BytesTotal,
+    int SignaturesGenerated)
+{
+    public double OverallPercentage => FilesTotal > 0 ? (double)FilesComplete / FilesTotal : 0;
+}
+
+/// <summary>
+/// Options for parallel signature building.
+/// </summary>
+public sealed class ParallelBuildOptions
+{
+    /// <summary>
+    /// Minimum file size for delta patching. Smaller files use hash check.
+    /// </summary>
+    public long MinDeltaSize { get; init; } = 64 * 1024;
+
+    /// <summary>
+    /// Whether to generate signature files.
+    /// </summary>
+    public bool GenerateSignatures { get; init; } = true;
+
+    /// <summary>
+    /// Output directory for signature files.
+    /// </summary>
+    public string? SignatureOutputDirectory { get; init; }
+
+    /// <summary>
+    /// Fallback URL for full download.
+    /// </summary>
+    public string? FallbackUrl { get; init; }
+
+    /// <summary>
+    /// File extensions that are compressed media (delta is useless).
+    /// </summary>
+    public IReadOnlySet<string> CompressedMediaExtensions { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ".mp3", ".ogg", ".mp4", ".webm", ".m4a", ".aac",
+        ".jpg", ".jpeg", ".png", ".webp", ".gif",
+        ".zip", ".gz", ".bz2", ".xz", ".zst"
+    };
+
+    /// <summary>
+    /// Patterns to exclude from manifest.
+    /// </summary>
+    public IReadOnlyList<string> ExcludePatterns { get; init; } = new[]
+    {
+        "*.pdb", "*.log", ".git/**", ".gitignore", "*.tmp", "*.pstmp"
+    };
+}
+
+/// <summary>
+/// Parallel signature and manifest builder for the CLI.
+/// Uses Parallel.ForEachAsync for work-stealing parallelism.
+/// </summary>
+public sealed class ParallelSignatureBuilder
+{
+    private readonly IChunker _chunker;
+    private readonly ChunkingOptions _options;
+
+    /// <summary>
+    /// Maximum concurrent file processing. Defaults to ProcessorCount - 1.
+    /// </summary>
+    public int MaxConcurrency { get; init; } = Math.Max(1, Environment.ProcessorCount - 1);
+
+    public ParallelSignatureBuilder(IChunker chunker, ChunkingOptions? options = null)
+    {
+        _chunker = chunker ?? throw new ArgumentNullException(nameof(chunker));
+        _options = options ?? new ChunkingOptions();
+    }
+
+    /// <summary>
+    /// Builds a manifest with parallel file processing.
+    /// </summary>
+    public async Task<GameManifest> BuildAsync(
+        string sourceDirectory,
+        string version,
+        string baseUrl,
+        ParallelBuildOptions? options = null,
+        IProgress<ParallelBuildProgress>? progress = null,
+        CancellationToken ct = default)
+    {
+        options ??= new ParallelBuildOptions();
+
+        // Enumerate files
+        var allFiles = Directory.GetFiles(sourceDirectory, "*", SearchOption.AllDirectories)
+            .Select(f => new FileInfo(f))
+            .Where(f => !MatchesExcludePattern(
+                Path.GetRelativePath(sourceDirectory, f.FullName).Replace('\\', '/'),
+                options.ExcludePatterns))
+            .OrderBy(f => f.FullName) // Consistent ordering
+            .ToList();
+
+        var totalBytes = allFiles.Sum(f => f.Length);
+        var results = new ConcurrentBag<ManifestFile>();
+
+        // Thread-safe counters
+        var filesComplete = 0;
+        var bytesProcessed = 0L;
+        var signaturesGenerated = 0;
+
+        // Slot tracking for UI (maps thread to slot index)
+        var slotAssignments = new ConcurrentDictionary<int, int>();
+        var nextSlot = 0;
+
+        int GetSlotIndex()
+        {
+            var threadId = Environment.CurrentManagedThreadId;
+            return slotAssignments.GetOrAdd(threadId, _ => Interlocked.Increment(ref nextSlot) - 1);
+        }
+
+        var parallelOptions = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = MaxConcurrency,
+            CancellationToken = ct
+        };
+
+        var signatureGenerator = new SignatureGenerator(_chunker, _options);
+
+        await Parallel.ForEachAsync(allFiles, parallelOptions, async (fileInfo, token) =>
+        {
+            var relativePath = Path.GetRelativePath(sourceDirectory, fileInfo.FullName).Replace('\\', '/');
+            var slotIndex = GetSlotIndex();
+
+            // Report start
+            progress?.Report(new ParallelBuildProgress(
+                slotIndex,
+                relativePath,
+                0,
+                Volatile.Read(ref filesComplete),
+                allFiles.Count,
+                Volatile.Read(ref bytesProcessed),
+                totalBytes,
+                Volatile.Read(ref signaturesGenerated)));
+
+            // Compute hash
+            var hash = await ComputeFileHashAsync(fileInfo.FullName, token);
+
+            // Determine strategy
+            var strategy = DetermineStrategy(relativePath, fileInfo.Length, options);
+
+            // Generate signature if needed
+            string? signaturePath = null;
+            if (strategy == UpdateStrategy.Delta && options.GenerateSignatures)
+            {
+                var sigOutputPath = Path.Combine(
+                    options.SignatureOutputDirectory ?? Path.Combine(sourceDirectory, "signatures"),
+                    relativePath + ".sig");
+
+                signatureGenerator.GenerateSignatureFile(fileInfo.FullName, sigOutputPath);
+                signaturePath = "signatures/" + relativePath + ".sig";
+                Interlocked.Increment(ref signaturesGenerated);
+            }
+
+            // Add result
+            results.Add(new ManifestFile
+            {
+                Path = relativePath,
+                Size = fileInfo.Length,
+                Hash = hash,
+                Strategy = strategy,
+                SignatureUrl = signaturePath,
+                CompressedUrl = null,
+                CompressedSize = 0
+            });
+
+            // Update counters
+            Interlocked.Increment(ref filesComplete);
+            Interlocked.Add(ref bytesProcessed, fileInfo.Length);
+
+            // Report complete
+            progress?.Report(new ParallelBuildProgress(
+                slotIndex,
+                null, // Clear slot
+                1.0,
+                Volatile.Read(ref filesComplete),
+                allFiles.Count,
+                Volatile.Read(ref bytesProcessed),
+                totalBytes,
+                Volatile.Read(ref signaturesGenerated)));
+        });
+
+        // Build manifest from results (sorted for consistency)
+        var sortedFiles = results.OrderBy(f => f.Path).ToList();
+
+        return new GameManifest
+        {
+            Version = version,
+            BuildDate = DateTime.UtcNow,
+            SupportedAlgorithms = new[] { _chunker.AlgorithmId },
+            PreferredAlgorithm = _chunker.AlgorithmId,
+            BaseUrl = baseUrl,
+            FallbackUrl = options.FallbackUrl,
+            Files = sortedFiles
+        };
+    }
+
+    private static UpdateStrategy DetermineStrategy(string path, long size, ParallelBuildOptions options)
+    {
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+
+        // Compressed media - delta is useless
+        if (options.CompressedMediaExtensions.Contains(ext))
+            return UpdateStrategy.AlwaysCompressed;
+
+        // Small files - just hash check
+        if (size < options.MinDeltaSize)
+            return UpdateStrategy.HashCheck;
+
+        // Default to delta
+        return UpdateStrategy.Delta;
+    }
+
+    private static bool MatchesExcludePattern(string path, IReadOnlyList<string> patterns)
+    {
+        foreach (var pattern in patterns)
+        {
+            if (MatchPattern(path, pattern))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool MatchPattern(string path, string pattern)
+    {
+        // Simple glob matching (supports * and **)
+        var parts = pattern.Split('*');
+        var pos = 0;
+
+        foreach (var part in parts)
+        {
+            if (string.IsNullOrEmpty(part))
+                continue;
+
+            var index = path.IndexOf(part, pos, StringComparison.OrdinalIgnoreCase);
+            if (index < 0)
+                return false;
+
+            pos = index + part.Length;
+        }
+
+        return true;
+    }
+
+    private static async Task<string> ComputeFileHashAsync(string filePath, CancellationToken ct)
+    {
+        await using var stream = new FileStream(
+            filePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 81920,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+        var hash = await SHA256.HashDataAsync(stream, ct);
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+}

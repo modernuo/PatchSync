@@ -36,9 +36,7 @@ public static class WorkspaceMenu
         while (true)
         {
             AnsiConsole.Clear();
-            AnsiConsole.Write(
-                new FigletText("PatchSync")
-                    .Color(Color.Blue));
+            AnsiConsole.MarkupLine($"[blue]{Branding.Title}[/]");
             AnsiConsole.MarkupLine("[grey]Delta patching tool for game updates[/]\n");
 
             var choices = new[]
@@ -145,9 +143,7 @@ public static class WorkspaceMenu
             AnsiConsole.Clear();
 
             // Show consistent PatchSync header
-            AnsiConsole.Write(
-                new FigletText("PatchSync")
-                    .Color(Color.Blue));
+            AnsiConsole.MarkupLine($"[blue]{Branding.Title}[/]");
 
             // Show workspace info: name (path)
             var projectName = config?.Project.Name ?? "Unknown Project";
@@ -494,9 +490,7 @@ public static class WorkspaceMenu
         while (true)
         {
             AnsiConsole.Clear();
-            AnsiConsole.Write(
-                new FigletText("PatchSync")
-                    .Color(Color.Blue));
+            AnsiConsole.MarkupLine($"[blue]{Branding.Title}[/]");
             AnsiConsole.MarkupLine("[grey]Standalone tools (no workspace)[/]\n");
 
             var choices = new[]
