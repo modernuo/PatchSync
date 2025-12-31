@@ -61,17 +61,11 @@ public static class WorkspaceMenu
                 AnsiConsole.Clear();
                 AnsiConsole.MarkupLine("[bold blue]:sparkles: CREATE WORKSPACE[/]\n");
 
-                var result = await InitCommand.RunWizardAsync();
-                if (result == 0)
+                var (exitCode, workspace) = await InitCommand.RunWizardAndGetWorkspaceAsync();
+                if (exitCode == 0 && workspace != null)
                 {
-                    // Init succeeded - find and open the workspace
-                    // The workspace path was just created, we need to find it
-                    // For now, prompt user to confirm the path
-                    var workspace = FindRecentlyCreatedWorkspace();
-                    if (workspace != null)
-                    {
-                        return await ShowWorkspaceMenuAsync(workspace);
-                    }
+                    // Init succeeded - open the workspace directly
+                    return await ShowWorkspaceMenuAsync(workspace);
                 }
                 // If init failed or was cancelled, loop back to selector
             }
@@ -93,27 +87,6 @@ public static class WorkspaceMenu
                 return 0;
             }
         }
-    }
-
-    /// <summary>
-    /// Attempts to find a recently created workspace.
-    /// </summary>
-    private static WorkspaceManager? FindRecentlyCreatedWorkspace()
-    {
-        // Check current directory first
-        var workspace = WorkspaceManager.FindWorkspace(Directory.GetCurrentDirectory());
-        if (workspace != null) return workspace;
-
-        // Prompt user for the workspace path
-        AnsiConsole.WriteLine();
-        var path = AnsiConsole.Prompt(
-            new TextPrompt<string>("[yellow]Enter workspace path to open:[/]")
-                .AllowEmpty());
-
-        if (string.IsNullOrWhiteSpace(path)) return null;
-
-        var manager = WorkspaceManager.ForPath(path);
-        return manager.Exists ? manager : null;
     }
 
     /// <summary>
@@ -176,13 +149,14 @@ public static class WorkspaceMenu
         {
             AnsiConsole.Clear();
 
-            // Show workspace header
-            var projectName = config?.Project.Name ?? "Unknown Project";
+            // Show consistent PatchSync header
             AnsiConsole.Write(
-                new FigletText(TruncateForFiglet(projectName))
+                new FigletText("PatchSync")
                     .Color(Color.Blue));
 
-            AnsiConsole.MarkupLine($"[grey]Workspace:[/] {workspace.WorkspacePath}");
+            // Show workspace info: name (path)
+            var projectName = config?.Project.Name ?? "Unknown Project";
+            AnsiConsole.MarkupLine($"[grey]Workspace:[/] [blue]{projectName}[/] [grey]({workspace.WorkspacePath})[/]");
             AnsiConsole.WriteLine();
 
             // Show quick status
@@ -600,13 +574,5 @@ public static class WorkspaceMenu
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[grey]Press any key to continue...[/]");
         Console.ReadKey(true);
-    }
-
-    private static string TruncateForFiglet(string text)
-    {
-        // Figlet text can be very wide - truncate long names
-        const int maxLength = 20;
-        if (text.Length <= maxLength) return text;
-        return text[..(maxLength - 3)] + "...";
     }
 }

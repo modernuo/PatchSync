@@ -40,6 +40,20 @@ public static class InitCommand
 
     public static async Task<int> RunWizardAsync()
     {
+        var (exitCode, _) = await RunWizardCoreAsync();
+        return exitCode;
+    }
+
+    /// <summary>
+    /// Runs the wizard and returns both exit code and the created workspace manager.
+    /// </summary>
+    public static async Task<(int ExitCode, WorkspaceManager? Workspace)> RunWizardAndGetWorkspaceAsync()
+    {
+        return await RunWizardCoreAsync();
+    }
+
+    private static async Task<(int ExitCode, WorkspaceManager? Workspace)> RunWizardCoreAsync()
+    {
         AnsiConsole.MarkupLine("[grey]Initialize a new PatchSync workspace[/]\n");
 
         // Workspace path
@@ -68,7 +82,7 @@ public static class InitCommand
             if (!await AnsiConsole.ConfirmAsync("Overwrite existing workspace?", defaultValue: false))
             {
                 AnsiConsole.MarkupLine("[grey]Cancelled.[/]");
-                return 0;
+                return (0, null);
             }
         }
 
@@ -121,7 +135,8 @@ public static class InitCommand
             }
         }
 
-        return await ExecuteAsync(path, name, channels.ToArray(), id, inputPath);
+        var exitCode = await ExecuteAsync(path, name, channels.ToArray(), id, inputPath);
+        return (exitCode, exitCode == 0 ? manager : null);
     }
 
     private static async Task<int> ExecuteAsync(
