@@ -390,7 +390,8 @@ public static class FontPreviewCommand
         ("Retro Terminal", Color.Green, "terminal"),
         ("Hacker", Color.Green, "hacker"),
         ("Neon Sign", Color.Magenta1, "neon"),
-        ("Rainbow", Color.Cyan1, "rainbow"),
+        ("Rainbow Gradient", Color.White, "rainbow-gradient"),
+        ("Rainbow Bars", Color.Cyan1, "rainbow-bars"),
     ];
 
     private static readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(15) };
@@ -788,15 +789,87 @@ public static class FontPreviewCommand
                 AnsiConsole.MarkupLine("[magenta1]                    ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧[/]");
                 break;
 
-            case "rainbow":
+            case "rainbow-gradient":
+                RenderRainbowGradient(text, font);
+                break;
+
+            case "rainbow-bars":
                 AnsiConsole.MarkupLine("[red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/]");
-                AnsiConsole.Write(figlet);
+                RenderRainbowGradient(text, font);
                 AnsiConsole.MarkupLine("[purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/]");
                 break;
 
             default:
                 AnsiConsole.Write(figlet);
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Rainbow colors for gradient effect
+    /// </summary>
+    private static readonly Color[] RainbowColors =
+    [
+        Color.Red,
+        Color.Orange1,
+        Color.Yellow,
+        Color.Green,
+        Color.Cyan1,
+        Color.Blue,
+        Color.Purple,
+        Color.Magenta1,
+    ];
+
+    /// <summary>
+    /// Renders figlet text with a horizontal rainbow gradient
+    /// </summary>
+    private static void RenderRainbowGradient(string text, FigletFont? font)
+    {
+        // Render figlet to string first
+        var figletText = font != null
+            ? new FigletText(font, text)
+            : new FigletText(text);
+
+        // Capture the figlet output as plain text
+        var writer = new StringWriter();
+        var console = AnsiConsole.Create(new AnsiConsoleSettings
+        {
+            Out = new AnsiConsoleOutput(writer),
+            ColorSystem = ColorSystemSupport.NoColors
+        });
+        console.Write(figletText);
+        var lines = writer.ToString().Split(Environment.NewLine, StringSplitOptions.None);
+
+        // Find the maximum width for consistent coloring
+        var maxWidth = lines.Max(l => l.Length);
+        if (maxWidth == 0) maxWidth = 1;
+
+        // Render each line with rainbow colors per column
+        foreach (var line in lines)
+        {
+            if (string.IsNullOrEmpty(line))
+            {
+                AnsiConsole.WriteLine();
+                continue;
+            }
+
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < line.Length; i++)
+            {
+                var ch = line[i];
+                if (ch == ' ')
+                {
+                    sb.Append(' ');
+                }
+                else
+                {
+                    // Calculate color based on position (spread across the width)
+                    var colorIndex = (int)((float)i / maxWidth * RainbowColors.Length) % RainbowColors.Length;
+                    var color = RainbowColors[colorIndex];
+                    sb.Append($"[{color.ToMarkup()}]{Markup.Escape(ch.ToString())}[/]");
+                }
+            }
+            AnsiConsole.MarkupLine(sb.ToString());
         }
     }
 
