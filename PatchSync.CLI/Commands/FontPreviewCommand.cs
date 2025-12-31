@@ -14,7 +14,7 @@ public static class FontPreviewCommand
         "PatchSync", "fonts");
 
     // Base URLs for font repositories
-    private const string XeroBase = "https://raw.githubusercontent.com/xero/figlet-fonts/master/";
+    private const string XeroBase = "https://raw.githubusercontent.com/xero/figlet-fonts/main/";
     private const string HimeiBase = "https://raw.githubusercontent.com/hIMEI29A/FigletFonts/master/src/";
     private const string PhrackerBase = "https://raw.githubusercontent.com/phracker/figlet-fonts/master/";
 
