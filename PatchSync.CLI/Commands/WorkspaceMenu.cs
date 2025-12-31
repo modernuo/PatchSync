@@ -171,7 +171,7 @@ public static class WorkspaceMenu
                 ":bar_chart: View status",
                 ":outbox_tray: Publish version",
                 ":check_mark_button: Verify installation",
-                ":hammer_and_wrench: Settings",
+                ":hammer_and_wrench:  Settings",
                 "",
                 ":file_folder: Switch workspace",
                 ":cross_mark: Exit"
@@ -242,7 +242,7 @@ public static class WorkspaceMenu
         if (selection.Contains("Settings"))
         {
             AnsiConsole.Clear();
-            AnsiConsole.MarkupLine("[bold blue]:hammer_and_wrench: WORKSPACE SETTINGS[/]\n");
+            AnsiConsole.MarkupLine("[bold blue]:hammer_and_wrench:  WORKSPACE SETTINGS[/]\n");
             await ShowSettingsMenuAsync(workspace, config);
             return 0;
         }
@@ -426,7 +426,7 @@ public static class WorkspaceMenu
         {
             ":memo: Edit configuration file",
             ":open_file_folder: Open workspace folder",
-            ":information: View configuration",
+            ":information:  View configuration",
             ":left_arrow: Back"
         };
 
