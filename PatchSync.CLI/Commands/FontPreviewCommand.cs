@@ -821,7 +821,7 @@ public static class FontPreviewCommand
     ];
 
     /// <summary>
-    /// Renders figlet text with a horizontal rainbow gradient
+    /// Renders figlet text with a diagonal rainbow gradient
     /// </summary>
     private static void RenderRainbowGradient(string text, FigletFont? font)
     {
@@ -840,13 +840,19 @@ public static class FontPreviewCommand
         console.Write(figletText);
         var lines = writer.ToString().Split(Environment.NewLine, StringSplitOptions.None);
 
-        // Find the maximum width for consistent coloring
+        // Find dimensions for consistent diagonal coloring
         var maxWidth = lines.Max(l => l.Length);
+        var height = lines.Length;
         if (maxWidth == 0) maxWidth = 1;
+        if (height == 0) height = 1;
 
-        // Render each line with rainbow colors per column
-        foreach (var line in lines)
+        // The diagonal distance determines color - max is width + height
+        var maxDiagonal = maxWidth + height;
+
+        // Render each line with rainbow colors based on diagonal position (x + y)
+        for (int y = 0; y < lines.Length; y++)
         {
+            var line = lines[y];
             if (string.IsNullOrEmpty(line))
             {
                 AnsiConsole.WriteLine();
@@ -854,17 +860,18 @@ public static class FontPreviewCommand
             }
 
             var sb = new System.Text.StringBuilder();
-            for (int i = 0; i < line.Length; i++)
+            for (int x = 0; x < line.Length; x++)
             {
-                var ch = line[i];
+                var ch = line[x];
                 if (ch == ' ')
                 {
                     sb.Append(' ');
                 }
                 else
                 {
-                    // Calculate color based on position (spread across the width)
-                    var colorIndex = (int)((float)i / maxWidth * RainbowColors.Length) % RainbowColors.Length;
+                    // Calculate color based on diagonal position (x + y)
+                    var diagonal = x + y;
+                    var colorIndex = (int)((float)diagonal / maxDiagonal * RainbowColors.Length) % RainbowColors.Length;
                     var color = RainbowColors[colorIndex];
                     sb.Append($"[{color.ToMarkup()}]{Markup.Escape(ch.ToString())}[/]");
                 }
