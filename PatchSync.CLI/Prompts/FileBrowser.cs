@@ -292,14 +292,14 @@ public class FileBrowser
             try
             {
                 var info = new DriveInfo(d);
-                var label = info.IsReady ? info.VolumeLabel : "Not Ready";
+                var label = info.IsReady ? Markup.Escape(info.VolumeLabel) : "Not Ready";
                 var size = info.IsReady ? FormatBytes(info.TotalSize) : "";
                 var free = info.IsReady ? FormatBytes(info.AvailableFreeSpace) : "";
                 return (
                     Drive: d,
                     Display: DisplayIcons
-                        ? $"{Icons.Drive} {d.TrimEnd('\\')} [{label}] {size} ({free} free)"
-                        : $"{d.TrimEnd('\\')} [{label}] {size} ({free} free)",
+                        ? $"{Icons.Drive} {d.TrimEnd('\\')} [[{label}]] {size} ({free} free)"
+                        : $"{d.TrimEnd('\\')} [[{label}]] {size} ({free} free)",
                     info.IsReady
                 );
             }
