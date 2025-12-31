@@ -56,21 +56,19 @@ public static class InitCommand
     {
         AnsiConsole.MarkupLine("[grey]Initialize a new PatchSync workspace[/]\n");
 
-        // Workspace path
-        var useBrowser = await AnsiConsole.ConfirmAsync("Browse for workspace directory?");
+        // Workspace path - type path or press Enter to browse
+        var pathInput = AnsiConsole.Prompt(
+            new TextPrompt<string>("[green]Workspace directory[/] [grey](Enter to browse)[/]:")
+                .AllowEmpty());
+
         string path;
-        if (useBrowser)
+        if (string.IsNullOrWhiteSpace(pathInput))
         {
             path = Browse.ForFolder("[green]Select workspace directory[/]", allowNew: true);
         }
         else
         {
-            var defaultPath = Directory.GetCurrentDirectory();
-            path = AnsiConsole.Prompt(
-                new TextPrompt<string>($"[green]Workspace directory[/] [[{defaultPath}]]:")
-                    .AllowEmpty());
-            if (string.IsNullOrWhiteSpace(path))
-                path = defaultPath;
+            path = Path.GetFullPath(pathInput);
         }
         AnsiConsole.MarkupLine($"[blue]Path:[/] {path}\n");
 
@@ -123,15 +121,17 @@ public static class InitCommand
         string? inputPath = null;
         if (await AnsiConsole.ConfirmAsync("Configure default input directory?", defaultValue: false))
         {
-            if (await AnsiConsole.ConfirmAsync("Browse for input directory?"))
+            var inputPathInput = AnsiConsole.Prompt(
+                new TextPrompt<string>("[green]Default input directory[/] [grey](Enter to browse)[/]:")
+                    .AllowEmpty());
+
+            if (string.IsNullOrWhiteSpace(inputPathInput))
             {
                 inputPath = Browse.ForFolder("[green]Select default input directory[/]");
             }
             else
             {
-                inputPath = AnsiConsole.Prompt(
-                    new TextPrompt<string>("[green]Default input directory:[/]")
-                        .AllowEmpty());
+                inputPath = Path.GetFullPath(inputPathInput);
             }
         }
 

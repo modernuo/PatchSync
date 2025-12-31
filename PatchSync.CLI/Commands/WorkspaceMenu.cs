@@ -92,28 +92,23 @@ public static class WorkspaceMenu
     /// <summary>
     /// Browse for an existing workspace.
     /// </summary>
-    private static async Task<WorkspaceManager?> BrowseForWorkspaceAsync()
+    private static Task<WorkspaceManager?> BrowseForWorkspaceAsync()
     {
         AnsiConsole.Clear();
         AnsiConsole.MarkupLine("[bold blue]:file_folder: OPEN WORKSPACE[/]\n");
 
-        var useBrowser = await AnsiConsole.ConfirmAsync("Browse for workspace directory?");
-        string path;
+        var pathInput = AnsiConsole.Prompt(
+            new TextPrompt<string>("[green]Workspace directory[/] [grey](Enter to browse)[/]:")
+                .AllowEmpty());
 
-        if (useBrowser)
+        string path;
+        if (string.IsNullOrWhiteSpace(pathInput))
         {
             path = Prompts.Browse.ForFolder("[green]Select workspace directory[/]");
         }
         else
         {
-            path = AnsiConsole.Prompt(
-                new TextPrompt<string>("[green]Workspace directory:[/]")
-                    .AllowEmpty());
-        }
-
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return null;
+            path = Path.GetFullPath(pathInput);
         }
 
         var manager = WorkspaceManager.ForPath(path);
@@ -122,10 +117,10 @@ public static class WorkspaceMenu
             AnsiConsole.MarkupLine($"[red]No workspace found at:[/] {path}");
             AnsiConsole.MarkupLine("[grey]Press any key to continue...[/]");
             Console.ReadKey(true);
-            return null;
+            return Task.FromResult<WorkspaceManager?>(null);
         }
 
-        return manager;
+        return Task.FromResult<WorkspaceManager?>(manager);
     }
 
     /// <summary>
