@@ -200,6 +200,4 @@ public sealed class BuildDefaults
 [JsonSerializable(typeof(PatchSyncConfig))]
 [JsonSerializable(typeof(S3Config))]
 [JsonSerializable(typeof(BuildDefaults))]
-public partial class ConfigJsonContext : JsonSerializerContext
-{
-}
+public partial class ConfigJsonContext : JsonSerializerContext;

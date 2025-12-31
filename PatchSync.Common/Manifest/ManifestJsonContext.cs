@@ -16,6 +16,4 @@ namespace PatchSync.Common.Manifest;
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     WriteIndented = true,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
-public partial class ManifestJsonContext : JsonSerializerContext
-{
-}
+public partial class ManifestJsonContext : JsonSerializerContext;

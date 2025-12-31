@@ -1,4 +1,5 @@
 using System.Text.Json;
+using PatchSync.CLI.Prompts;
 using PatchSync.Common.Chunking;
 using PatchSync.Common.Manifest;
 using PatchSync.SDK.Signatures;
@@ -48,20 +49,40 @@ public static class BuildCommand
     {
         AnsiConsole.MarkupLine("[grey]Generate signatures and manifest for a directory[/]\n");
 
-        // Input directory
-        var inputPath = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Input directory[/] (containing game files):")
-                .Validate(path =>
-                {
-                    if (!Directory.Exists(path))
-                        return ValidationResult.Error($"Directory not found: {path}");
-                    return ValidationResult.Success();
-                }));
+        // Input directory - use file browser
+        var useBrowser = await AnsiConsole.ConfirmAsync("Browse for input directory?");
+        string inputPath;
+        if (useBrowser)
+        {
+            inputPath = Browse.ForFolder("[green]Select input directory[/] (containing game files)");
+        }
+        else
+        {
+            inputPath = AnsiConsole.Prompt(
+                new TextPrompt<string>("[green]Input directory path:[/]")
+                    .Validate(path =>
+                    {
+                        if (!Directory.Exists(path))
+                            return ValidationResult.Error($"Directory not found: {path}");
+                        return ValidationResult.Success();
+                    }));
+        }
+        AnsiConsole.MarkupLine($"[blue]Input:[/] {inputPath}\n");
 
         // Output directory
-        var outputPath = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Output directory[/] (for manifest and signatures):")
-                .DefaultValue("./output"));
+        useBrowser = await AnsiConsole.ConfirmAsync("Browse for output directory?");
+        string outputPath;
+        if (useBrowser)
+        {
+            outputPath = Browse.ForFolder("[green]Select output directory[/]", allowNew: true);
+        }
+        else
+        {
+            outputPath = AnsiConsole.Prompt(
+                new TextPrompt<string>("[green]Output directory path:[/]")
+                    .DefaultValue("./output"));
+        }
+        AnsiConsole.MarkupLine($"[blue]Output:[/] {outputPath}\n");
 
         // Version
         var version = AnsiConsole.Prompt(

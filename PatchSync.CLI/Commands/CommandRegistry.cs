@@ -37,7 +37,7 @@ public static class CommandRegistry
         {
             Name = "build",
             Description = "Generate signatures and manifest for a directory",
-            Icon = "🔨",
+            Icon = ":hammer:",
             Handler = BuildCommand.RunAsync,
             WizardHandler = BuildCommand.RunWizardAsync
         });
@@ -46,7 +46,7 @@ public static class CommandRegistry
         {
             Name = "patch",
             Description = "Apply delta patches to update local files",
-            Icon = "📥",
+            Icon = ":inbox_tray:",
             Handler = PatchCommand.RunAsync,
             WizardHandler = PatchCommand.RunWizardAsync
         });
@@ -55,7 +55,7 @@ public static class CommandRegistry
         {
             Name = "verify",
             Description = "Verify local files against manifest",
-            Icon = "✓",
+            Icon = ":check_mark_button:",
             Handler = VerifyCommand.RunAsync,
             WizardHandler = VerifyCommand.RunWizardAsync
         });
@@ -64,7 +64,7 @@ public static class CommandRegistry
         {
             Name = "upload",
             Description = "Upload build artifacts to S3-compatible storage",
-            Icon = "☁",
+            Icon = "📤",
             Handler = UploadCommand.RunAsync,
             WizardHandler = UploadCommand.RunWizardAsync
         });
@@ -73,7 +73,7 @@ public static class CommandRegistry
         {
             Name = "info",
             Description = "Display information about manifest or signature files",
-            Icon = "ℹ",
+            Icon = ":red_question_mark:",
             Handler = InfoCommand.RunAsync,
             WizardHandler = InfoCommand.RunWizardAsync
         });
@@ -110,7 +110,7 @@ public static class CommandRegistry
 
         var choices = _commands
             .Select(c => $"{c.Icon ?? ">"} {c.Name,-10} - {c.Description}")
-            .Append("  Exit")
+            .Append(":cross_mark: Exit")
             .ToList();
 
         var selection = AnsiConsole.Prompt(

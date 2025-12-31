@@ -1,5 +1,8 @@
+using System.Text;
 using PatchSync.CLI.Commands;
 using Spectre.Console;
+
+Console.OutputEncoding = Encoding.UTF8;
 
 // Register all commands
 CommandRegistry.RegisterBuiltInCommands();

@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using PatchSync.CLI.Config;
+using PatchSync.CLI.Prompts;
 using PatchSync.CLI.Storage;
 using Spectre.Console;
 
@@ -70,18 +71,34 @@ public static class UploadCommand
                              !string.IsNullOrEmpty(storedCreds.AccessKey) &&
                              !string.IsNullOrEmpty(storedCreds.SecretKey);
 
-        // Build directory
-        var buildDir = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Build directory[/] (output from 'build' command):")
-                .DefaultValue("./output")
-                .Validate(path =>
-                {
-                    if (!Directory.Exists(path))
-                        return ValidationResult.Error($"Directory not found: {path}");
-                    if (!File.Exists(Path.Combine(path, "manifest.json")))
-                        return ValidationResult.Error("No manifest.json found in directory");
-                    return ValidationResult.Success();
-                }));
+        // Build directory - use file browser
+        var useBrowser = await AnsiConsole.ConfirmAsync("Browse for build directory?");
+        string buildDir;
+        if (useBrowser)
+        {
+            buildDir = Browse.ForFolder("[green]Select build directory[/] (containing manifest.json)");
+            // Validate it has manifest.json
+            while (!File.Exists(Path.Combine(buildDir, "manifest.json")))
+            {
+                AnsiConsole.MarkupLine("[red]No manifest.json found in selected directory[/]");
+                buildDir = Browse.ForFolder("[green]Select build directory[/] (containing manifest.json)");
+            }
+        }
+        else
+        {
+            buildDir = AnsiConsole.Prompt(
+                new TextPrompt<string>("[green]Build directory path:[/]")
+                    .DefaultValue("./output")
+                    .Validate(path =>
+                    {
+                        if (!Directory.Exists(path))
+                            return ValidationResult.Error($"Directory not found: {path}");
+                        if (!File.Exists(Path.Combine(path, "manifest.json")))
+                            return ValidationResult.Error("No manifest.json found in directory");
+                        return ValidationResult.Success();
+                    }));
+        }
+        AnsiConsole.MarkupLine($"[blue]Build directory:[/] {buildDir}\n");
 
         // S3 Configuration
         S3Config s3Config;
@@ -91,8 +108,8 @@ public static class UploadCommand
                 ? $"[grey]{storedCreds.Endpoint}[/]"
                 : "[grey]stored credentials[/]";
 
-            var useExisting = AnsiConsole.Confirm(
-                $"Use saved S3 credentials? ({credSource})", true);
+            var useExisting = await AnsiConsole.ConfirmAsync(
+                $"Use saved S3 credentials? ({credSource})");
 
             if (useExisting)
             {
@@ -128,11 +145,11 @@ public static class UploadCommand
         s3Config.Prefix = string.IsNullOrEmpty(prefix) ? null : prefix;
 
         // Options
-        var compress = AnsiConsole.Confirm("Compress files for fallback downloads?", true);
-        var skipRaw = AnsiConsole.Confirm("Skip uploading raw files? (use if hosting separately)", false);
+        var compress = await AnsiConsole.ConfirmAsync("Compress files for fallback downloads?");
+        var skipRaw = await AnsiConsole.ConfirmAsync("Skip uploading raw files? (use if hosting separately)", false);
 
         // Offer to save credentials (with warning)
-        if (!hasStoredCreds || !AnsiConsole.Confirm("Keep using existing saved credentials?", true))
+        if (!hasStoredCreds || !await AnsiConsole.ConfirmAsync("Keep using existing saved credentials?"))
         {
             var choices = new List<string>
             {
@@ -183,7 +200,7 @@ public static class UploadCommand
         }
 
         // Save non-sensitive config (endpoint, bucket, region, etc. but NOT secret key)
-        if (AnsiConsole.Confirm("Save non-sensitive S3 settings to config file?", true))
+        if (await AnsiConsole.ConfirmAsync("Save non-sensitive S3 settings to config file?"))
         {
             config.S3 = new S3Config
             {

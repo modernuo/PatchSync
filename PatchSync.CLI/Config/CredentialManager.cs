@@ -272,6 +272,4 @@ public sealed class S3Credentials
     WriteIndented = false,
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(S3Credentials))]
-internal partial class CredentialJsonContext : JsonSerializerContext
-{
-}
+internal partial class CredentialJsonContext : JsonSerializerContext;

@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using PatchSync.CLI.Prompts;
 using PatchSync.SDK.Client;
 using PatchSync.SDK.Storage;
 using Spectre.Console;
@@ -49,15 +50,25 @@ public static class VerifyCommand
                     return ValidationResult.Success();
                 }));
 
-        // Local path
-        var localPath = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Local path[/] (installation directory):")
-                .Validate(path =>
-                {
-                    if (!Directory.Exists(path))
-                        return ValidationResult.Error($"Directory not found: {path}");
-                    return ValidationResult.Success();
-                }));
+        // Local path - use file browser
+        var useBrowser = await AnsiConsole.ConfirmAsync("Browse for installation directory?");
+        string localPath;
+        if (useBrowser)
+        {
+            localPath = Browse.ForFolder("[green]Select installation directory to verify[/]");
+        }
+        else
+        {
+            localPath = AnsiConsole.Prompt(
+                new TextPrompt<string>("[green]Installation directory path:[/]")
+                    .Validate(path =>
+                    {
+                        if (!Directory.Exists(path))
+                            return ValidationResult.Error($"Directory not found: {path}");
+                        return ValidationResult.Success();
+                    }));
+        }
+        AnsiConsole.MarkupLine($"[blue]Local path:[/] {localPath}\n");
 
         // Manifest path
         var manifestPath = AnsiConsole.Prompt(

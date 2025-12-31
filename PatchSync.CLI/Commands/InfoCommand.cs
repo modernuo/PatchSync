@@ -1,4 +1,5 @@
 using System.Text.Json;
+using PatchSync.CLI.Prompts;
 using PatchSync.Common.Manifest;
 using PatchSync.Common.Signatures;
 using Spectre.Console;
@@ -54,18 +55,31 @@ public static class InfoCommand
                     "Manifest file (manifest.json)",
                     "Signature file (*.sig)"));
 
-        // File path
-        var defaultPath = fileType.Contains("Manifest") ? "manifest.json" : "*.sig";
-        var filePath = AnsiConsole.Prompt(
-            new TextPrompt<string>($"[green]File path[/] (e.g., {defaultPath}):")
-                .Validate(path =>
-                {
-                    if (!File.Exists(path))
-                        return ValidationResult.Error($"File not found: {path}");
-                    return ValidationResult.Success();
-                }));
+        // File path - use file browser
+        var useBrowser = await AnsiConsole.ConfirmAsync("Browse for file?");
+        string filePath;
+        if (useBrowser)
+        {
+            var pattern = fileType.Contains("Manifest") ? "*.json" : "*.sig";
+            var title = fileType.Contains("Manifest")
+                ? "[green]Select manifest file[/]"
+                : "[green]Select signature file[/]";
+            filePath = Browse.ForFile(title, pattern: pattern);
+        }
+        else
+        {
+            var defaultPath = fileType.Contains("Manifest") ? "manifest.json" : "*.sig";
+            filePath = AnsiConsole.Prompt(
+                new TextPrompt<string>($"[green]File path[/] (e.g., {defaultPath}):")
+                    .Validate(path =>
+                    {
+                        if (!File.Exists(path))
+                            return ValidationResult.Error($"File not found: {path}");
+                        return ValidationResult.Success();
+                    }));
+        }
 
-        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine($"[blue]File:[/] {filePath}\n");
 
         var ext = Path.GetExtension(filePath).ToLowerInvariant();
         return ext switch
