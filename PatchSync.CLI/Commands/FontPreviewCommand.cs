@@ -1,173 +1,78 @@
+using System.Net.Http;
 using Spectre.Console;
 
 namespace PatchSync.CLI.Commands;
 
 /// <summary>
 /// Preview different Figlet fonts and title styles for the CLI.
-/// Interactive arrow-key navigation to cycle through styles.
+/// Interactive navigation: Left/Right for fonts, Up/Down for styles.
 /// </summary>
 public static class FontPreviewCommand
 {
+    private static readonly string FontCacheDir = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "PatchSync", "fonts");
+
     /// <summary>
-    /// High-tech title style presets
+    /// Available Figlet fonts (name, filename, download URL)
     /// </summary>
-    private static readonly (string Name, string Category, Action<string> Renderer)[] TitleStyles =
+    private static readonly (string Name, string File, string Url)[] AvailableFonts =
     [
-        // Clean/Professional
-        ("Default Blue", "Clean", text =>
-        {
-            AnsiConsole.Write(new FigletText(text).Color(Color.Blue));
-        }),
-
-        ("Minimal Underline", "Clean", text =>
-        {
-            AnsiConsole.Write(new FigletText(text).Color(Color.White));
-            AnsiConsole.MarkupLine("[blue]════════════════════════════════════════════════════[/]");
-        }),
-
-        ("Modern Minimal", "Clean", text =>
-        {
-            AnsiConsole.WriteLine();
-            AnsiConsole.Write(new FigletText(text).Color(Color.Grey));
-            AnsiConsole.MarkupLine("  [blue]●[/] [grey]Delta Patching Tool[/]");
-            AnsiConsole.WriteLine();
-        }),
-
-        // Neon/Cyber
-        ("Cyan Glow", "Neon", text =>
-        {
-            AnsiConsole.Write(new FigletText(text).Color(Color.Cyan1));
-            AnsiConsole.MarkupLine("[grey]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/]");
-        }),
-
-        ("Neon Green (Matrix)", "Neon", text =>
-        {
-            AnsiConsole.Write(new FigletText(text).Color(Color.Green));
-        }),
-
-        ("Hot Pink (Synthwave)", "Neon", text =>
-        {
-            AnsiConsole.Write(new FigletText(text).Color(Color.DeepPink1));
-        }),
-
-        ("Purple Haze", "Neon", text =>
-        {
-            AnsiConsole.Write(new FigletText(text).Color(Color.MediumPurple1));
-        }),
-
-        ("Orange Ember", "Neon", text =>
-        {
-            AnsiConsole.Write(new FigletText(text).Color(Color.Orange1));
-        }),
-
-        // Panels/Boxed
-        ("Panel Rounded", "Boxed", text =>
-        {
-            var panel = new Panel(new FigletText(text).Color(Color.Cyan1))
-                .Border(BoxBorder.Rounded)
-                .BorderColor(Color.Blue)
-                .Padding(1, 0);
-            AnsiConsole.Write(panel);
-        }),
-
-        ("Panel Double Neon", "Boxed", text =>
-        {
-            var panel = new Panel(new FigletText(text).Color(Color.Green))
-                .Border(BoxBorder.Double)
-                .BorderColor(Color.Green)
-                .Padding(1, 0);
-            AnsiConsole.Write(panel);
-        }),
-
-        ("Panel Heavy Purple", "Boxed", text =>
-        {
-            var panel = new Panel(new FigletText(text).Color(Color.Fuchsia))
-                .Border(BoxBorder.Heavy)
-                .BorderColor(Color.Purple)
-                .Padding(1, 0);
-            AnsiConsole.Write(panel);
-        }),
-
-        // Tech/Cyber
-        ("Tech Header", "Tech", text =>
-        {
-            AnsiConsole.Write(new FigletText(text).Color(Color.Cyan1));
-            AnsiConsole.MarkupLine("[grey]╭─────────────────────────────────────────────────────────╮[/]");
-            AnsiConsole.MarkupLine("[grey]│[/] [blue]Delta Patching SDK[/] [grey]•[/] [green]Fast[/] [grey]•[/] [yellow]Efficient[/] [grey]•[/] [magenta]CDN-Ready[/] [grey]│[/]");
-            AnsiConsole.MarkupLine("[grey]╰─────────────────────────────────────────────────────────╯[/]");
-        }),
-
-        ("Cyberpunk", "Tech", text =>
-        {
-            AnsiConsole.MarkupLine("[fuchsia]▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓[/]");
-            AnsiConsole.Write(new FigletText(text).Color(Color.Yellow));
-            AnsiConsole.MarkupLine("[fuchsia]▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓[/]");
-        }),
-
-        ("Glitch", "Tech", text =>
-        {
-            AnsiConsole.MarkupLine("[red on black]█▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀█[/]");
-            AnsiConsole.Write(new FigletText(text).Color(Color.Red));
-            AnsiConsole.MarkupLine("[cyan]░▒▓█▓▒░[/][red]▒▓█▓▒░[/][green]▒▓█▓▒░[/][cyan]▒▓█▓▒░[/][red]▒▓█▓▒░[/][green]▒▓█▓▒░[/][cyan]▒▓█▓▒░[/]");
-        }),
-
-        ("Unicode Blocks", "Tech", text =>
-        {
-            AnsiConsole.MarkupLine("[blue]█▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀█[/]");
-            AnsiConsole.Write(new FigletText(text).Color(Color.Cyan1));
-            AnsiConsole.MarkupLine("[blue]█▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄█[/]");
-        }),
-
-        // Retro/Terminal
-        ("Retro Terminal", "Retro", text =>
-        {
-            AnsiConsole.MarkupLine("[green]┌──────────────────────────────────────────────────────────────┐[/]");
-            AnsiConsole.MarkupLine("[green]│[/] [black on green] SYSTEM READY [/]                                             [green]│[/]");
-            AnsiConsole.MarkupLine("[green]├──────────────────────────────────────────────────────────────┤[/]");
-            AnsiConsole.Write(new FigletText(text).Color(Color.Green));
-            AnsiConsole.MarkupLine("[green]└──────────────────────────────────────────────────────────────┘[/]");
-        }),
-
-        ("Hacker Boot", "Retro", text =>
-        {
-            AnsiConsole.MarkupLine("[green]> INITIALIZING...[/]");
-            AnsiConsole.MarkupLine("[green]> LOADING SYSTEM...[/]");
-            AnsiConsole.MarkupLine("[green]> ACCESS GRANTED[/]");
-            AnsiConsole.WriteLine();
-            AnsiConsole.Write(new FigletText(text).Color(Color.Green));
-            AnsiConsole.MarkupLine("[green]> _[/]");
-        }),
-
-        ("Amber CRT", "Retro", text =>
-        {
-            AnsiConsole.MarkupLine("[orange1]╔══════════════════════════════════════════════════════════════╗[/]");
-            AnsiConsole.Write(new FigletText(text).Color(Color.Orange1));
-            AnsiConsole.MarkupLine("[orange1]╚══════════════════════════════════════════════════════════════╝[/]");
-        }),
-
-        // Colorful
-        ("Gradient Dots", "Colorful", text =>
-        {
-            AnsiConsole.MarkupLine("[blue]●[/][cyan]●[/][green]●[/][yellow]●[/][red]●[/][magenta]●[/] [grey]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/]");
-            AnsiConsole.Write(new FigletText(text).Color(Color.White));
-            AnsiConsole.MarkupLine("[magenta]●[/][red]●[/][yellow]●[/][green]●[/][cyan]●[/][blue]●[/] [grey]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/]");
-        }),
-
-        ("Rainbow Bar", "Colorful", text =>
-        {
-            AnsiConsole.MarkupLine("[red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/]");
-            AnsiConsole.Write(new FigletText(text).Color(Color.Cyan1));
-            AnsiConsole.MarkupLine("[purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/]");
-        }),
-
-        ("Neon Sign", "Colorful", text =>
-        {
-            AnsiConsole.MarkupLine("[grey]     ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓[/]");
-            AnsiConsole.Write(new FigletText(text).Color(Color.Magenta1));
-            AnsiConsole.MarkupLine("[grey]     ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛[/]");
-            AnsiConsole.MarkupLine("[magenta1]              ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧[/]");
-        }),
+        ("Standard", "standard.flf", "http://www.figlet.org/fonts/standard.flf"),
+        ("Slant", "slant.flf", "http://www.figlet.org/fonts/slant.flf"),
+        ("Small", "small.flf", "http://www.figlet.org/fonts/small.flf"),
+        ("Big", "big.flf", "http://www.figlet.org/fonts/big.flf"),
+        ("Banner", "banner.flf", "http://www.figlet.org/fonts/banner.flf"),
+        ("Block", "block.flf", "http://www.figlet.org/fonts/block.flf"),
+        ("Lean", "lean.flf", "http://www.figlet.org/fonts/lean.flf"),
+        ("Mini", "mini.flf", "http://www.figlet.org/fonts/mini.flf"),
+        ("Script", "script.flf", "http://www.figlet.org/fonts/script.flf"),
+        ("Shadow", "shadow.flf", "http://www.figlet.org/fonts/shadow.flf"),
+        ("Slant Small", "smshadow.flf", "http://www.figlet.org/fonts/smshadow.flf"),
+        ("Speed", "speed.flf", "http://www.figlet.org/fonts/speed.flf"),
+        ("Star Wars", "starwars.flf", "http://www.figlet.org/fonts/starwars.flf"),
+        ("3D Diagonal", "3-d.flf", "http://www.figlet.org/fonts/3-d.flf"),
+        ("Doom", "doom.flf", "http://www.figlet.org/fonts/doom.flf"),
+        ("Epic", "epic.flf", "http://www.figlet.org/fonts/epic.flf"),
+        ("Fender", "fender.flf", "http://www.figlet.org/fonts/fender.flf"),
+        ("Larry 3D", "larry3d.flf", "http://www.figlet.org/fonts/larry3d.flf"),
+        ("Ogre", "ogre.flf", "http://www.figlet.org/fonts/ogre.flf"),
+        ("Pebbles", "pebbles.flf", "http://www.figlet.org/fonts/pebbles.flf"),
+        ("Puffy", "puffy.flf", "http://www.figlet.org/fonts/puffy.flf"),
+        ("Rectangles", "rectangles.flf", "http://www.figlet.org/fonts/rectangles.flf"),
+        ("Stampatello", "stampatello.flf", "http://www.figlet.org/fonts/stampatello.flf"),
+        ("Univers", "univers.flf", "http://www.figlet.org/fonts/univers.flf"),
     ];
+
+    /// <summary>
+    /// Color/style presets for the Figlet text
+    /// </summary>
+    private static readonly (string Name, Color Color, string? Decoration)[] ColorStyles =
+    [
+        ("Blue", Color.Blue, null),
+        ("Cyan", Color.Cyan1, null),
+        ("Green (Matrix)", Color.Green, null),
+        ("Hot Pink", Color.DeepPink1, null),
+        ("Purple", Color.MediumPurple1, null),
+        ("Orange", Color.Orange1, null),
+        ("Yellow", Color.Yellow, null),
+        ("White", Color.White, null),
+        ("Red", Color.Red, null),
+        ("Grey", Color.Grey, null),
+        ("Cyan + Line", Color.Cyan1, "line"),
+        ("Green + Box", Color.Green, "box-double"),
+        ("Purple + Box", Color.Fuchsia, "box-heavy"),
+        ("Blue + Box", Color.Blue, "box-rounded"),
+        ("Cyberpunk", Color.Yellow, "cyber"),
+        ("Glitch", Color.Red, "glitch"),
+        ("Retro Terminal", Color.Green, "terminal"),
+        ("Hacker", Color.Green, "hacker"),
+        ("Neon Sign", Color.Magenta1, "neon"),
+        ("Rainbow", Color.Cyan1, "rainbow"),
+    ];
+
+    private static readonly HttpClient _httpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
+    private static readonly Dictionary<string, FigletFont?> _fontCache = new();
 
     public static Task<int> RunAsync(string[] args)
     {
@@ -199,8 +104,12 @@ public static class FontPreviewCommand
 
     private static void RunInteractivePreview(string text)
     {
-        var currentIndex = 0;
+        var fontIndex = 0;
+        var styleIndex = 0;
         var running = true;
+
+        // Ensure cache directory exists
+        Directory.CreateDirectory(FontCacheDir);
 
         // Hide cursor for cleaner display
         Console.CursorVisible = false;
@@ -209,43 +118,55 @@ public static class FontPreviewCommand
         {
             while (running)
             {
-                RenderPreview(text, currentIndex);
+                RenderPreview(text, fontIndex, styleIndex);
 
                 var key = Console.ReadKey(true);
 
                 switch (key.Key)
                 {
-                    case ConsoleKey.UpArrow:
+                    // Font navigation (Left/Right)
                     case ConsoleKey.LeftArrow:
+                    case ConsoleKey.H: // vim-style
+                        fontIndex = (fontIndex - 1 + AvailableFonts.Length) % AvailableFonts.Length;
+                        break;
+
+                    case ConsoleKey.RightArrow:
+                    case ConsoleKey.L: // vim-style
+                        fontIndex = (fontIndex + 1) % AvailableFonts.Length;
+                        break;
+
+                    // Style navigation (Up/Down)
+                    case ConsoleKey.UpArrow:
                     case ConsoleKey.K: // vim-style
-                        currentIndex = (currentIndex - 1 + TitleStyles.Length) % TitleStyles.Length;
+                        styleIndex = (styleIndex - 1 + ColorStyles.Length) % ColorStyles.Length;
                         break;
 
                     case ConsoleKey.DownArrow:
-                    case ConsoleKey.RightArrow:
                     case ConsoleKey.J: // vim-style
-                        currentIndex = (currentIndex + 1) % TitleStyles.Length;
+                        styleIndex = (styleIndex + 1) % ColorStyles.Length;
                         break;
 
                     case ConsoleKey.Home:
-                        currentIndex = 0;
+                        fontIndex = 0;
+                        styleIndex = 0;
                         break;
 
                     case ConsoleKey.End:
-                        currentIndex = TitleStyles.Length - 1;
+                        fontIndex = AvailableFonts.Length - 1;
+                        styleIndex = ColorStyles.Length - 1;
                         break;
 
                     case ConsoleKey.PageUp:
-                        currentIndex = Math.Max(0, currentIndex - 5);
+                        styleIndex = Math.Max(0, styleIndex - 5);
                         break;
 
                     case ConsoleKey.PageDown:
-                        currentIndex = Math.Min(TitleStyles.Length - 1, currentIndex + 5);
+                        styleIndex = Math.Min(ColorStyles.Length - 1, styleIndex + 5);
                         break;
 
                     case ConsoleKey.Enter:
                         running = false;
-                        ShowSelectedStyle(text, currentIndex);
+                        ShowSelectedStyle(text, fontIndex, styleIndex);
                         break;
 
                     case ConsoleKey.Escape:
@@ -255,36 +176,12 @@ public static class FontPreviewCommand
                         AnsiConsole.MarkupLine("[grey]Cancelled.[/]");
                         break;
 
-                    // Number keys for quick jump
-                    case ConsoleKey.D0 or ConsoleKey.NumPad0:
-                        currentIndex = Math.Min(9, TitleStyles.Length - 1);
-                        break;
-                    case ConsoleKey.D1 or ConsoleKey.NumPad1:
-                        currentIndex = 0;
-                        break;
-                    case ConsoleKey.D2 or ConsoleKey.NumPad2:
-                        currentIndex = Math.Min(1, TitleStyles.Length - 1);
-                        break;
-                    case ConsoleKey.D3 or ConsoleKey.NumPad3:
-                        currentIndex = Math.Min(2, TitleStyles.Length - 1);
-                        break;
-                    case ConsoleKey.D4 or ConsoleKey.NumPad4:
-                        currentIndex = Math.Min(3, TitleStyles.Length - 1);
-                        break;
-                    case ConsoleKey.D5 or ConsoleKey.NumPad5:
-                        currentIndex = Math.Min(4, TitleStyles.Length - 1);
-                        break;
-                    case ConsoleKey.D6 or ConsoleKey.NumPad6:
-                        currentIndex = Math.Min(5, TitleStyles.Length - 1);
-                        break;
-                    case ConsoleKey.D7 or ConsoleKey.NumPad7:
-                        currentIndex = Math.Min(6, TitleStyles.Length - 1);
-                        break;
-                    case ConsoleKey.D8 or ConsoleKey.NumPad8:
-                        currentIndex = Math.Min(7, TitleStyles.Length - 1);
-                        break;
-                    case ConsoleKey.D9 or ConsoleKey.NumPad9:
-                        currentIndex = Math.Min(8, TitleStyles.Length - 1);
+                    // Tab to cycle through fonts quickly
+                    case ConsoleKey.Tab:
+                        if (key.Modifiers.HasFlag(ConsoleModifiers.Shift))
+                            fontIndex = (fontIndex - 1 + AvailableFonts.Length) % AvailableFonts.Length;
+                        else
+                            fontIndex = (fontIndex + 1) % AvailableFonts.Length;
                         break;
                 }
             }
@@ -295,32 +192,35 @@ public static class FontPreviewCommand
         }
     }
 
-    private static void RenderPreview(string text, int currentIndex)
+    private static void RenderPreview(string text, int fontIndex, int styleIndex)
     {
         AnsiConsole.Clear();
 
-        var (name, category, renderer) = TitleStyles[currentIndex];
+        var (fontName, fontFile, _) = AvailableFonts[fontIndex];
+        var (styleName, color, decoration) = ColorStyles[styleIndex];
         var termInfo = GetTerminalInfo();
 
         // Header
-        AnsiConsole.MarkupLine("[grey]═══════════════════════════════════════════════════════════════════[/]");
-        AnsiConsole.MarkupLine("[bold yellow]  PATCHSYNC TITLE STYLE PREVIEW[/]");
-        AnsiConsole.MarkupLine("[grey]═══════════════════════════════════════════════════════════════════[/]");
+        AnsiConsole.MarkupLine("[grey]═══════════════════════════════════════════════════════════════════════════[/]");
+        AnsiConsole.MarkupLine("[bold yellow]  PATCHSYNC FONT & STYLE PREVIEW[/]");
+        AnsiConsole.MarkupLine("[grey]═══════════════════════════════════════════════════════════════════════════[/]");
         AnsiConsole.WriteLine();
 
         // Navigation info
-        AnsiConsole.MarkupLine($"[grey]Terminal:[/] {termInfo}    [grey]Styles:[/] [cyan]{currentIndex + 1}[/][grey]/[/][cyan]{TitleStyles.Length}[/]");
+        AnsiConsole.MarkupLine($"[grey]Terminal:[/] {termInfo}");
+        AnsiConsole.MarkupLine($"[grey]Font:[/] [cyan]{fontIndex + 1}[/][grey]/[/][cyan]{AvailableFonts.Length}[/]    [grey]Style:[/] [cyan]{styleIndex + 1}[/][grey]/[/][cyan]{ColorStyles.Length}[/]");
         AnsiConsole.WriteLine();
 
-        // Style info
-        AnsiConsole.MarkupLine($"[yellow]Style:[/] [bold white]{name}[/]  [grey]│[/]  [yellow]Category:[/] [blue]{category}[/]");
-        AnsiConsole.MarkupLine("[grey]───────────────────────────────────────────────────────────────────[/]");
+        // Current selection
+        AnsiConsole.MarkupLine($"[yellow]Font:[/] [bold white]{fontName}[/]  [grey]│[/]  [yellow]Style:[/] [bold white]{styleName}[/]");
+        AnsiConsole.MarkupLine("[grey]───────────────────────────────────────────────────────────────────────────[/]");
         AnsiConsole.WriteLine();
 
-        // Render the style
+        // Render the preview
         try
         {
-            renderer(text);
+            var font = GetOrDownloadFont(fontIndex);
+            RenderWithStyle(text, font, color, decoration);
         }
         catch (Exception ex)
         {
@@ -328,54 +228,231 @@ public static class FontPreviewCommand
         }
 
         AnsiConsole.WriteLine();
-        AnsiConsole.WriteLine();
 
         // Controls
-        AnsiConsole.MarkupLine("[grey]───────────────────────────────────────────────────────────────────[/]");
-        AnsiConsole.MarkupLine("[grey]  [/][white]↑/↓[/][grey] or [/][white]j/k[/][grey]  Cycle styles     [/][white]1-9[/][grey]  Jump to style[/]");
-        AnsiConsole.MarkupLine("[grey]  [/][white]Enter[/][grey]       Select style      [/][white]Esc/q[/][grey]  Cancel[/]");
-        AnsiConsole.MarkupLine("[grey]───────────────────────────────────────────────────────────────────[/]");
+        AnsiConsole.MarkupLine("[grey]───────────────────────────────────────────────────────────────────────────[/]");
+        AnsiConsole.MarkupLine("[grey]  [/][white]←/→[/][grey] or [/][white]h/l[/][grey]  Change font       [/][white]↑/↓[/][grey] or [/][white]j/k[/][grey]  Change style[/]");
+        AnsiConsole.MarkupLine("[grey]  [/][white]Tab[/][grey]          Next font          [/][white]Enter[/][grey]        Select[/]");
+        AnsiConsole.MarkupLine("[grey]  [/][white]Esc/q[/][grey]        Cancel[/]");
+        AnsiConsole.MarkupLine("[grey]───────────────────────────────────────────────────────────────────────────[/]");
 
-        // Style list preview
+        // Font and style lists side by side
         AnsiConsole.WriteLine();
-        var startIdx = Math.Max(0, currentIndex - 2);
-        var endIdx = Math.Min(TitleStyles.Length - 1, startIdx + 5);
-        startIdx = Math.Max(0, endIdx - 5); // Adjust if at the end
+        RenderLists(fontIndex, styleIndex);
+    }
 
-        for (int i = startIdx; i <= endIdx && i < TitleStyles.Length; i++)
+    private static void RenderLists(int fontIndex, int styleIndex)
+    {
+        // Show 5 fonts and 5 styles side by side
+        var fontStart = Math.Max(0, fontIndex - 2);
+        var fontEnd = Math.Min(AvailableFonts.Length - 1, fontStart + 4);
+        fontStart = Math.Max(0, fontEnd - 4);
+
+        var styleStart = Math.Max(0, styleIndex - 2);
+        var styleEnd = Math.Min(ColorStyles.Length - 1, styleStart + 4);
+        styleStart = Math.Max(0, styleEnd - 4);
+
+        var lines = Math.Max(fontEnd - fontStart + 1, styleEnd - styleStart + 1);
+
+        AnsiConsole.MarkupLine("[grey]  Fonts                              Styles[/]");
+        AnsiConsole.MarkupLine("[grey]  ─────                              ──────[/]");
+
+        for (int i = 0; i < lines; i++)
         {
-            var (n, c, _) = TitleStyles[i];
-            if (i == currentIndex)
+            var fontLine = "";
+            var styleLine = "";
+
+            var fi = fontStart + i;
+            if (fi <= fontEnd && fi < AvailableFonts.Length)
             {
-                AnsiConsole.MarkupLine($"  [cyan]►[/] [bold white]{i + 1,2}. {n}[/] [grey]({c})[/]");
+                var (name, _, _) = AvailableFonts[fi];
+                var displayName = name.Length > 18 ? name[..15] + "..." : name;
+                if (fi == fontIndex)
+                    fontLine = $"[cyan]►[/] [bold white]{displayName,-18}[/]";
+                else
+                    fontLine = $"  [grey]{displayName,-18}[/]";
             }
             else
             {
-                AnsiConsole.MarkupLine($"    [grey]{i + 1,2}. {n} ({c})[/]");
+                fontLine = new string(' ', 20);
             }
+
+            var si = styleStart + i;
+            if (si <= styleEnd && si < ColorStyles.Length)
+            {
+                var (name, _, _) = ColorStyles[si];
+                var displayName = name.Length > 18 ? name[..15] + "..." : name;
+                if (si == styleIndex)
+                    styleLine = $"[cyan]►[/] [bold white]{displayName}[/]";
+                else
+                    styleLine = $"  [grey]{displayName}[/]";
+            }
+
+            AnsiConsole.MarkupLine($"  {fontLine}         {styleLine}");
         }
     }
 
-    private static void ShowSelectedStyle(string text, int selectedIndex)
+    private static FigletFont? GetOrDownloadFont(int fontIndex)
+    {
+        var (name, file, url) = AvailableFonts[fontIndex];
+        var cachePath = Path.Combine(FontCacheDir, file);
+
+        // Check memory cache
+        if (_fontCache.TryGetValue(file, out var cachedFont))
+            return cachedFont;
+
+        // Check disk cache
+        if (File.Exists(cachePath))
+        {
+            try
+            {
+                var font = FigletFont.Load(cachePath);
+                _fontCache[file] = font;
+                return font;
+            }
+            catch
+            {
+                // Corrupted file, re-download
+                File.Delete(cachePath);
+            }
+        }
+
+        // Download font
+        try
+        {
+            AnsiConsole.MarkupLine($"[grey]Downloading font: {name}...[/]");
+            var content = _httpClient.GetStringAsync(url).GetAwaiter().GetResult();
+            File.WriteAllText(cachePath, content);
+            var font = FigletFont.Load(cachePath);
+            _fontCache[file] = font;
+            return font;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Could not download font: {Markup.Escape(ex.Message)}[/]");
+            _fontCache[file] = null;
+            return null;
+        }
+    }
+
+    private static void RenderWithStyle(string text, FigletFont? font, Color color, string? decoration)
+    {
+        var figlet = font != null
+            ? new FigletText(font, text).Color(color)
+            : new FigletText(text).Color(color);
+
+        switch (decoration)
+        {
+            case "line":
+                AnsiConsole.Write(figlet);
+                AnsiConsole.MarkupLine($"[{color.ToMarkup()}]━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━[/]");
+                break;
+
+            case "box-double":
+                var panelDouble = new Panel(figlet)
+                    .Border(BoxBorder.Double)
+                    .BorderColor(color)
+                    .Padding(1, 0);
+                AnsiConsole.Write(panelDouble);
+                break;
+
+            case "box-heavy":
+                var panelHeavy = new Panel(figlet)
+                    .Border(BoxBorder.Heavy)
+                    .BorderColor(color)
+                    .Padding(1, 0);
+                AnsiConsole.Write(panelHeavy);
+                break;
+
+            case "box-rounded":
+                var panelRounded = new Panel(figlet)
+                    .Border(BoxBorder.Rounded)
+                    .BorderColor(color)
+                    .Padding(1, 0);
+                AnsiConsole.Write(panelRounded);
+                break;
+
+            case "cyber":
+                AnsiConsole.MarkupLine("[fuchsia]▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓[/]");
+                AnsiConsole.Write(figlet);
+                AnsiConsole.MarkupLine("[fuchsia]▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓[/]");
+                break;
+
+            case "glitch":
+                AnsiConsole.MarkupLine("[red on black]█▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀█[/]");
+                AnsiConsole.Write(figlet);
+                AnsiConsole.MarkupLine("[cyan]░▒▓█▓▒░[/][red]▒▓█▓▒░[/][green]▒▓█▓▒░[/][cyan]▒▓█▓▒░[/][red]▒▓█▓▒░[/][green]▒▓█▓▒░[/][cyan]▒▓█▓▒░[/][red]▒▓█▓▒░[/][green]▒▓█▓▒░[/]");
+                break;
+
+            case "terminal":
+                AnsiConsole.MarkupLine("[green]┌─────────────────────────────────────────────────────────────────────────┐[/]");
+                AnsiConsole.MarkupLine("[green]│[/] [black on green] SYSTEM READY [/]                                                       [green]│[/]");
+                AnsiConsole.MarkupLine("[green]├─────────────────────────────────────────────────────────────────────────┤[/]");
+                AnsiConsole.Write(figlet);
+                AnsiConsole.MarkupLine("[green]└─────────────────────────────────────────────────────────────────────────┘[/]");
+                break;
+
+            case "hacker":
+                AnsiConsole.MarkupLine("[green]> INITIALIZING...[/]");
+                AnsiConsole.MarkupLine("[green]> LOADING SYSTEM...[/]");
+                AnsiConsole.MarkupLine("[green]> ACCESS GRANTED[/]");
+                AnsiConsole.WriteLine();
+                AnsiConsole.Write(figlet);
+                AnsiConsole.MarkupLine("[green]> _[/]");
+                break;
+
+            case "neon":
+                AnsiConsole.MarkupLine("[grey]     ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓[/]");
+                AnsiConsole.Write(figlet);
+                AnsiConsole.MarkupLine("[grey]     ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛[/]");
+                AnsiConsole.MarkupLine("[magenta1]                    ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧[/]");
+                break;
+
+            case "rainbow":
+                AnsiConsole.MarkupLine("[red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/][red]█[/][orange1]█[/][yellow]█[/][green]█[/][cyan]█[/][blue]█[/][purple]█[/]");
+                AnsiConsole.Write(figlet);
+                AnsiConsole.MarkupLine("[purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/][purple]█[/][blue]█[/][cyan]█[/][green]█[/][yellow]█[/][orange1]█[/][red]█[/]");
+                break;
+
+            default:
+                AnsiConsole.Write(figlet);
+                break;
+        }
+    }
+
+    private static void ShowSelectedStyle(string text, int fontIndex, int styleIndex)
     {
         AnsiConsole.Clear();
 
-        var (name, category, renderer) = TitleStyles[selectedIndex];
+        var (fontName, fontFile, _) = AvailableFonts[fontIndex];
+        var (styleName, color, decoration) = ColorStyles[styleIndex];
 
-        AnsiConsole.MarkupLine($"[green]✓[/] Selected: [bold]{name}[/] [grey]({category})[/]");
+        AnsiConsole.MarkupLine($"[green]✓[/] Selected: [bold]{fontName}[/] + [bold]{styleName}[/]");
         AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine("[grey]───────────────────────────────────────────────────────────────────[/]");
-        AnsiConsole.WriteLine();
-
-        renderer(text);
-
-        AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine("[grey]───────────────────────────────────────────────────────────────────[/]");
+        AnsiConsole.MarkupLine("[grey]───────────────────────────────────────────────────────────────────────────[/]");
         AnsiConsole.WriteLine();
 
-        // Show code hint
-        AnsiConsole.MarkupLine("[yellow]To use this style, update WorkspaceMenu.cs ShowWorkspaceMenuAsync()[/]");
-        AnsiConsole.MarkupLine($"[grey]Style index: {selectedIndex}[/]");
+        try
+        {
+            var font = GetOrDownloadFont(fontIndex);
+            RenderWithStyle(text, font, color, decoration);
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[red]Error: {Markup.Escape(ex.Message)}[/]");
+        }
+
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("[grey]───────────────────────────────────────────────────────────────────────────[/]");
+        AnsiConsole.WriteLine();
+
+        // Show configuration details
+        AnsiConsole.MarkupLine("[yellow]Configuration:[/]");
+        AnsiConsole.MarkupLine($"  [grey]Font file:[/] {fontFile}");
+        AnsiConsole.MarkupLine($"  [grey]Color:[/] {color}");
+        AnsiConsole.MarkupLine($"  [grey]Decoration:[/] {decoration ?? "none"}");
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine($"[grey]Fonts cached in:[/] {FontCacheDir}");
     }
 
     private static string GetTerminalInfo()
@@ -396,7 +473,7 @@ public static class FontPreviewCommand
         if (termProgram.Contains("vscode", StringComparison.OrdinalIgnoreCase))
             return "[cyan]VS Code Terminal[/]";
         if (term.Contains("xterm"))
-            return $"[cyan]xterm[/]";
+            return "[cyan]xterm[/]";
         if (Environment.GetEnvironmentVariable("PSModulePath") != null)
             return "[cyan]PowerShell[/]";
 
@@ -412,10 +489,15 @@ public static class FontPreviewCommand
         AnsiConsole.MarkupLine("  -h, --help         Show this help message");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[yellow]Interactive Controls:[/]");
+        AnsiConsole.MarkupLine("  ←/→ or h/l    Cycle through fonts");
         AnsiConsole.MarkupLine("  ↑/↓ or j/k    Cycle through styles");
-        AnsiConsole.MarkupLine("  1-9           Jump to style by number");
-        AnsiConsole.MarkupLine("  Enter         Select current style");
+        AnsiConsole.MarkupLine("  Tab           Next font");
+        AnsiConsole.MarkupLine("  Enter         Select current combination");
         AnsiConsole.MarkupLine("  Esc/q         Cancel and exit");
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("[yellow]Features:[/]");
+        AnsiConsole.MarkupLine($"  {AvailableFonts.Length} Figlet fonts (downloaded on demand)");
+        AnsiConsole.MarkupLine($"  {ColorStyles.Length} color/style presets");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[yellow]Examples:[/]");
         AnsiConsole.MarkupLine("  patchsync fonts");
