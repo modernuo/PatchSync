@@ -547,6 +547,12 @@ public static class FontPreviewCommand
         try
         {
             var font = GetOrDownloadFont(fontIndex);
+            if (font == null && _incompatibleFonts.Contains(AvailableFonts[fontIndex].File))
+            {
+                AnsiConsole.MarkupLine("[yellow]This font is incompatible with Spectre.Console's parser.[/]");
+                AnsiConsole.MarkupLine("[grey]Using default font instead:[/]");
+                AnsiConsole.WriteLine();
+            }
             RenderWithStyle(text, font, color, decoration);
         }
         catch (Exception ex)
@@ -619,14 +625,27 @@ public static class FontPreviewCommand
         }
     }
 
+    // Track fonts that are incompatible with Spectre.Console's parser
+    private static readonly HashSet<string> _incompatibleFonts = new();
+    private const string IncompatibleMarker = ".incompatible";
+
     private static FigletFont? GetOrDownloadFont(int fontIndex)
     {
         var (name, file, url) = AvailableFonts[fontIndex];
         var cachePath = Path.Combine(FontCacheDir, file);
+        var incompatiblePath = cachePath + IncompatibleMarker;
 
         // Check memory cache
         if (_fontCache.TryGetValue(file, out var cachedFont))
             return cachedFont;
+
+        // Check if marked as incompatible
+        if (_incompatibleFonts.Contains(file) || File.Exists(incompatiblePath))
+        {
+            _incompatibleFonts.Add(file);
+            _fontCache[file] = null;
+            return null;
+        }
 
         // Check disk cache
         if (File.Exists(cachePath))
@@ -639,8 +658,9 @@ public static class FontPreviewCommand
             }
             catch
             {
-                // Corrupted file, re-download
-                File.Delete(cachePath);
+                // Font file exists but is incompatible with Spectre.Console
+                MarkAsIncompatible(file, incompatiblePath);
+                return null;
             }
         }
 
@@ -656,16 +676,43 @@ public static class FontPreviewCommand
                 Directory.CreateDirectory(dir);
 
             File.WriteAllText(cachePath, content);
-            var font = FigletFont.Load(cachePath);
-            _fontCache[file] = font;
-            return font;
+
+            // Try to parse the font
+            try
+            {
+                var font = FigletFont.Load(cachePath);
+                _fontCache[file] = font;
+                return font;
+            }
+            catch (Exception parseEx)
+            {
+                // Downloaded but incompatible with Spectre.Console parser
+                AnsiConsole.MarkupLine($"[yellow]Font incompatible: {Markup.Escape(parseEx.Message)}[/]");
+                MarkAsIncompatible(file, incompatiblePath);
+                return null;
+            }
         }
-        catch (Exception ex)
+        catch (HttpRequestException ex)
         {
-            AnsiConsole.MarkupLine($"[yellow]Could not download font: {Markup.Escape(ex.Message)}[/]");
+            AnsiConsole.MarkupLine($"[yellow]Download failed: {Markup.Escape(ex.Message)}[/]");
             _fontCache[file] = null;
             return null;
         }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[yellow]Error: {Markup.Escape(ex.Message)}[/]");
+            _fontCache[file] = null;
+            return null;
+        }
+    }
+
+    private static void MarkAsIncompatible(string file, string incompatiblePath)
+    {
+        _incompatibleFonts.Add(file);
+        _fontCache[file] = null;
+        // Create marker file so we don't keep re-trying
+        try { File.WriteAllText(incompatiblePath, "Incompatible with Spectre.Console FigletFont parser"); }
+        catch { /* ignore */ }
     }
 
     private static void RenderWithStyle(string text, FigletFont? font, Color color, string? decoration)
