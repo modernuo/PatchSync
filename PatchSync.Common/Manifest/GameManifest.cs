@@ -99,6 +99,18 @@ public sealed class ManifestFile
     /// Defaults to "files/{Path}" if not specified.
     /// </summary>
     public string? FileUrl { get; init; }
+
+    /// <summary>
+    /// Container format identifier (e.g., "uop-v1", "zip-v1").
+    /// Only set if Strategy is VirtualDelta.
+    /// </summary>
+    public string? ContainerFormat { get; init; }
+
+    /// <summary>
+    /// Relative URL to virtual signature file (e.g., "signatures/game.uop.vsig").
+    /// Required if Strategy is VirtualDelta.
+    /// </summary>
+    public string? VirtualSignatureUrl { get; init; }
 }
 
 /// <summary>
@@ -135,5 +147,11 @@ public enum UpdateStrategy
     /// Delete this file if it exists.
     /// Used for removing files from previous versions.
     /// </summary>
-    Delete
+    Delete,
+
+    /// <summary>
+    /// Virtual delta patching for container formats (UOP, ZIP, BSA, etc.).
+    /// Uses entry-level and sub-entry CDC chunking for efficient updates.
+    /// </summary>
+    VirtualDelta
 }

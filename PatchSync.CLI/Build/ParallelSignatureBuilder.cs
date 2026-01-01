@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using PatchSync.Common.Chunking;
 using PatchSync.Common.Manifest;
+using PatchSync.SDK.Containers;
 using PatchSync.SDK.Signatures;
 
 namespace PatchSync.CLI.Build;
@@ -17,7 +18,10 @@ public readonly record struct ParallelBuildProgress(
     int FilesTotal,
     long BytesProcessed,
     long BytesTotal,
-    int SignaturesGenerated)
+    int SignaturesGenerated,
+    long FileSize = 0,
+    bool HasSignature = false,
+    bool IsCompletion = false)
 {
     public double OverallPercentage => FilesTotal > 0 ? (double)FilesComplete / FilesTotal : 0;
 }
@@ -58,6 +62,24 @@ public sealed class ParallelBuildOptions
     };
 
     /// <summary>
+    /// Container/archive file extensions where delta patching is ineffective.
+    /// These formats have internal offset tables that cause chunk boundaries to shift
+    /// when content changes, defeating CDC algorithms.
+    /// </summary>
+    public IReadOnlySet<string> ContainerFileExtensions { get; init; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ".uop",   // UO MYP container format
+        ".pak",   // Generic package files
+        ".vpk",   // Valve package format
+        ".bsa",   // Bethesda archive
+        ".ba2",   // Bethesda archive v2
+        ".rpf",   // Rockstar package format
+        ".u",     // Unreal Engine packages
+        ".upk",   // Unreal Engine 3 packages
+        ".uasset" // Unreal Engine 4+ assets
+    };
+
+    /// <summary>
     /// Patterns to exclude from manifest.
     /// </summary>
     public IReadOnlyList<string> ExcludePatterns { get; init; } = new[]
@@ -74,16 +96,21 @@ public sealed class ParallelSignatureBuilder
 {
     private readonly IChunker _chunker;
     private readonly ChunkingOptions _options;
+    private readonly ContainerRegistry _containerRegistry;
 
     /// <summary>
     /// Maximum concurrent file processing. Defaults to ProcessorCount - 1.
     /// </summary>
     public int MaxConcurrency { get; init; } = Math.Max(1, Environment.ProcessorCount - 1);
 
-    public ParallelSignatureBuilder(IChunker chunker, ChunkingOptions? options = null)
+    public ParallelSignatureBuilder(
+        IChunker chunker,
+        ChunkingOptions? options = null,
+        ContainerRegistry? containerRegistry = null)
     {
         _chunker = chunker ?? throw new ArgumentNullException(nameof(chunker));
         _options = options ?? new ChunkingOptions();
+        _containerRegistry = containerRegistry ?? ContainerRegistry.Default;
     }
 
     /// <summary>
@@ -133,6 +160,7 @@ public sealed class ParallelSignatureBuilder
         };
 
         var signatureGenerator = new SignatureGenerator(_chunker, _options);
+        var virtualSignatureGenerator = new VirtualSignatureGenerator(_chunker, _options);
 
         await Parallel.ForEachAsync(allFiles, parallelOptions, async (fileInfo, token) =>
         {
@@ -153,11 +181,22 @@ public sealed class ParallelSignatureBuilder
             // Compute hash
             var hash = await ComputeFileHashAsync(fileInfo.FullName, token);
 
+            // Check if this is a supported container file
+            var ext = Path.GetExtension(relativePath);
+            IContainerHandler? containerHandler = null;
+            if (options.ContainerFileExtensions.Contains(ext))
+            {
+                _containerRegistry.TryGetHandlerForExtension(ext, out containerHandler);
+            }
+
             // Determine strategy
-            var strategy = DetermineStrategy(relativePath, fileInfo.Length, options);
+            var strategy = DetermineStrategy(relativePath, fileInfo.Length, options, containerHandler);
 
             // Generate signature if needed
             string? signaturePath = null;
+            string? virtualSignaturePath = null;
+            string? containerFormat = null;
+
             if (strategy == UpdateStrategy.Delta && options.GenerateSignatures)
             {
                 var sigOutputPath = Path.Combine(
@@ -168,6 +207,37 @@ public sealed class ParallelSignatureBuilder
                 signaturePath = "signatures/" + relativePath + ".sig";
                 Interlocked.Increment(ref signaturesGenerated);
             }
+            else if (strategy == UpdateStrategy.VirtualDelta && options.GenerateSignatures && containerHandler != null)
+            {
+                // Check if virtual delta is efficient for this container
+                var efficiencyResult = virtualSignatureGenerator.CheckEfficiency(
+                    fileInfo.FullName, containerHandler);
+
+                if (efficiencyResult.IsEfficient)
+                {
+                    // Generate virtual signature
+                    var vsigOutputPath = Path.Combine(
+                        options.SignatureOutputDirectory ?? Path.Combine(sourceDirectory, "signatures"),
+                        relativePath + ".vsig");
+
+                    virtualSignatureGenerator.GenerateSignatureFile(fileInfo.FullName, containerHandler, vsigOutputPath);
+                    virtualSignaturePath = "signatures/" + relativePath + ".vsig";
+                    containerFormat = containerHandler.FormatId;
+                    Interlocked.Increment(ref signaturesGenerated);
+                }
+                else
+                {
+                    // Fall back to regular Delta (CDC chunking) for inefficient containers
+                    strategy = UpdateStrategy.Delta;
+                    var sigOutputPath = Path.Combine(
+                        options.SignatureOutputDirectory ?? Path.Combine(sourceDirectory, "signatures"),
+                        relativePath + ".sig");
+
+                    signatureGenerator.GenerateSignatureFile(fileInfo.FullName, sigOutputPath);
+                    signaturePath = "signatures/" + relativePath + ".sig";
+                    Interlocked.Increment(ref signaturesGenerated);
+                }
+            }
 
             // Add result
             results.Add(new ManifestFile
@@ -177,6 +247,8 @@ public sealed class ParallelSignatureBuilder
                 Hash = hash,
                 Strategy = strategy,
                 SignatureUrl = signaturePath,
+                VirtualSignatureUrl = virtualSignaturePath,
+                ContainerFormat = containerFormat,
                 CompressedUrl = null,
                 CompressedSize = 0
             });
@@ -185,17 +257,31 @@ public sealed class ParallelSignatureBuilder
             Interlocked.Increment(ref filesComplete);
             Interlocked.Add(ref bytesProcessed, fileInfo.Length);
 
-            // Report complete
+            // Report completion with file info for streaming display
             progress?.Report(new ParallelBuildProgress(
                 slotIndex,
-                null, // Clear slot
+                relativePath,
                 1.0,
                 Volatile.Read(ref filesComplete),
                 allFiles.Count,
                 Volatile.Read(ref bytesProcessed),
                 totalBytes,
-                Volatile.Read(ref signaturesGenerated)));
+                Volatile.Read(ref signaturesGenerated),
+                FileSize: fileInfo.Length,
+                HasSignature: signaturePath != null || virtualSignaturePath != null,
+                IsCompletion: true));
         });
+
+        // Final progress report to ensure 100% is displayed
+        progress?.Report(new ParallelBuildProgress(
+            SlotIndex: -1,
+            FileName: null,
+            FileProgress: 1.0,
+            FilesComplete: allFiles.Count,
+            FilesTotal: allFiles.Count,
+            BytesProcessed: totalBytes,
+            BytesTotal: totalBytes,
+            SignaturesGenerated: Volatile.Read(ref signaturesGenerated)));
 
         // Build manifest from results (sorted for consistency)
         var sortedFiles = results.OrderBy(f => f.Path).ToList();
@@ -212,13 +298,25 @@ public sealed class ParallelSignatureBuilder
         };
     }
 
-    private static UpdateStrategy DetermineStrategy(string path, long size, ParallelBuildOptions options)
+    private static UpdateStrategy DetermineStrategy(
+        string path,
+        long size,
+        ParallelBuildOptions options,
+        IContainerHandler? containerHandler)
     {
         var ext = Path.GetExtension(path).ToLowerInvariant();
 
         // Compressed media - delta is useless
         if (options.CompressedMediaExtensions.Contains(ext))
             return UpdateStrategy.AlwaysCompressed;
+
+        // Container files - use VirtualDelta if handler available, otherwise HashCheck
+        if (options.ContainerFileExtensions.Contains(ext))
+        {
+            return containerHandler != null
+                ? UpdateStrategy.VirtualDelta
+                : UpdateStrategy.HashCheck;
+        }
 
         // Small files - just hash check
         if (size < options.MinDeltaSize)

@@ -7,24 +7,31 @@ using Spectre.Console.Rendering;
 namespace PatchSync.CLI.Build;
 
 /// <summary>
-/// State for a single worker slot.
+/// Completed file entry for display.
 /// </summary>
-internal sealed class SlotState
+internal readonly record struct CompletedFile(string Path, long Size, bool HasSignature);
+
+/// <summary>
+/// Active file entry with start time for sorting.
+/// </summary>
+internal sealed class ActiveFile
 {
-    public string? FileName { get; set; }
-    public double Progress { get; set; }
-    public bool IsActive => FileName != null;
+    public required string Path { get; init; }
+    public long StartTicks { get; init; } = Stopwatch.GetTimestamp();
 }
 
 /// <summary>
-/// Live table display for parallel build progress.
+/// Live display for parallel build progress.
+/// Shows streaming file completions instead of idle slots.
 /// Thread-safe updates from multiple workers.
+/// Implements IProgress directly for synchronous updates (avoids Progress&lt;T&gt; async posting).
 /// </summary>
-public sealed class LiveBuildProgress
+public sealed class LiveBuildProgress : IProgress<ParallelBuildProgress>
 {
     private readonly LiveDisplayContext _ctx;
-    private readonly int _slotCount;
-    private readonly ConcurrentDictionary<int, SlotState> _slots;
+    private readonly int _maxRecentFiles;
+    private readonly ConcurrentQueue<CompletedFile> _recentFiles;
+    private readonly ConcurrentDictionary<int, ActiveFile> _activeFiles;
     private readonly Stopwatch _stopwatch;
     private readonly object _renderLock = new();
 
@@ -34,31 +41,42 @@ public sealed class LiveBuildProgress
     private long _bytesTotal;
     private int _signaturesGenerated;
 
-    public LiveBuildProgress(LiveDisplayContext ctx, int slotCount)
+    public LiveBuildProgress(LiveDisplayContext ctx, int maxRecentFiles = 12)
     {
         _ctx = ctx;
-        _slotCount = slotCount;
-        _slots = new ConcurrentDictionary<int, SlotState>();
+        _maxRecentFiles = maxRecentFiles;
+        _recentFiles = new ConcurrentQueue<CompletedFile>();
+        _activeFiles = new ConcurrentDictionary<int, ActiveFile>();
         _stopwatch = Stopwatch.StartNew();
-
-        // Initialize slots
-        for (int i = 0; i < slotCount; i++)
-        {
-            _slots[i] = new SlotState();
-        }
     }
+
+    /// <summary>
+    /// IProgress implementation - synchronous update.
+    /// </summary>
+    void IProgress<ParallelBuildProgress>.Report(ParallelBuildProgress value) => Update(value);
 
     /// <summary>
     /// Updates progress from a worker. Thread-safe.
     /// </summary>
     public void Update(ParallelBuildProgress progress)
     {
-        // Update slot state
-        if (progress.SlotIndex >= 0 && progress.SlotIndex < _slotCount)
+        // Track active files by slot
+        if (progress.SlotIndex >= 0)
         {
-            var slot = _slots.GetOrAdd(progress.SlotIndex, _ => new SlotState());
-            slot.FileName = progress.FileName;
-            slot.Progress = progress.FileProgress;
+            if (progress.IsCompletion)
+            {
+                // File completed - record it and clear slot
+                if (progress.FileName != null)
+                {
+                    RecordCompletion(progress.FileName, progress.FileSize, progress.HasSignature);
+                }
+                _activeFiles.TryRemove(progress.SlotIndex, out _);
+            }
+            else if (progress.FileName != null)
+            {
+                // File started - track with start time
+                _activeFiles[progress.SlotIndex] = new ActiveFile { Path = progress.FileName };
+            }
         }
 
         // Update overall counters
@@ -70,6 +88,20 @@ public sealed class LiveBuildProgress
 
         // Render (throttled by Spectre's refresh rate)
         Render();
+    }
+
+    /// <summary>
+    /// Records a completed file for display.
+    /// </summary>
+    public void RecordCompletion(string relativePath, long size, bool hasSignature)
+    {
+        _recentFiles.Enqueue(new CompletedFile(relativePath, size, hasSignature));
+
+        // Keep queue bounded
+        while (_recentFiles.Count > _maxRecentFiles)
+        {
+            _recentFiles.TryDequeue(out _);
+        }
     }
 
     private void Render()
@@ -88,84 +120,99 @@ public sealed class LiveBuildProgress
             .BorderColor(Color.Blue)
             .Expand();
 
-        table.AddColumn(new TableColumn("[grey]Slot[/]").Width(6).Centered());
+        table.AddColumn(new TableColumn("[grey]Status[/]").Width(10));
         table.AddColumn(new TableColumn("[grey]File[/]"));
-        table.AddColumn(new TableColumn("[grey]Progress[/]").Width(30));
+        table.AddColumn(new TableColumn("[grey]Size[/]").Width(12).RightAligned());
 
-        // Add slot rows
-        for (int i = 0; i < _slotCount; i++)
-        {
-            var slot = _slots.GetValueOrDefault(i) ?? new SlotState();
-            AddSlotRow(table, i + 1, slot);
-        }
-
-        // Add separator and summary
-        table.AddEmptyRow();
-
+        // Summary row at top
         var overallPct = _filesTotal > 0 ? (double)_filesComplete / _filesTotal : 0;
-        var overallBar = BuildProgressBar(overallPct, 25);
+        var progressBar = BuildProgressBar(overallPct, 30);
         var elapsed = _stopwatch.Elapsed;
+        var rate = elapsed.TotalSeconds > 0 ? _bytesProcessed / elapsed.TotalSeconds : 0;
 
         table.AddRow(
-            new Markup("[yellow]Overall[/]"),
-            new Markup($"[white]{_filesComplete}[/][grey]/[/][white]{_filesTotal}[/] [grey]files[/]"),
-            new Markup($"{overallBar} [white]{overallPct:P0}[/]"));
+            new Markup($"[yellow]Progress[/]"),
+            new Markup($"{progressBar} [white]{_filesComplete}[/][grey]/[/][white]{_filesTotal}[/]"),
+            new Markup($"[cyan]{FormatBytes((long)rate)}/s[/]"));
 
-        // Stats row
-        var sigSize = FormatBytes(_bytesProcessed);
+        table.AddEmptyRow();
+
+        // Show currently active files (sorted by start time - oldest first at top)
+        var activeFiles = _activeFiles.Values
+            .OrderBy(f => f.StartTicks)
+            .ToList();
+
+        if (activeFiles.Count > 0)
+        {
+            var activeCount = Math.Min(activeFiles.Count, 6); // Show up to 6 active
+            for (int i = 0; i < activeCount; i++)
+            {
+                var file = activeFiles[i];
+                var fileName = TruncatePath(file.Path, 55);
+                // Older files (at top) show processing time
+                var fileElapsed = Stopwatch.GetElapsedTime(file.StartTicks);
+                var timeStr = fileElapsed.TotalSeconds >= 1 ? $"{fileElapsed.TotalSeconds:F1}s" : "";
+                table.AddRow(
+                    new Markup("[cyan]Working[/]"),
+                    new Markup($"[white]{Markup.Escape(fileName)}[/]"),
+                    new Markup($"[grey]{timeStr}[/]"));
+            }
+            if (activeFiles.Count > 6)
+            {
+                table.AddRow(
+                    new Markup("[grey]...[/]"),
+                    new Markup($"[grey]+{activeFiles.Count - 6} more[/]"),
+                    new Markup(""));
+            }
+            table.AddEmptyRow();
+        }
+
+        // Show recent completions (streaming out)
+        var recentList = _recentFiles.ToArray();
+        foreach (var file in recentList.Reverse().Take(8)) // Show last 8 completed
+        {
+            var fileName = TruncatePath(file.Path, 55);
+            var sigMarker = file.HasSignature ? "[green]:check_mark:[/]" : "[grey]-[/]";
+            table.AddRow(
+                new Markup($"[green]Done[/] {sigMarker}"),
+                new Markup($"[grey]{Markup.Escape(fileName)}[/]"),
+                new Markup($"[grey]{FormatBytes(file.Size)}[/]"));
+        }
+
+        // Stats row at bottom
+        table.AddEmptyRow();
         var elapsedStr = elapsed.TotalSeconds < 60
             ? $"{elapsed.TotalSeconds:F1}s"
             : $"{(int)elapsed.TotalMinutes}m {elapsed.Seconds}s";
 
-        var rate = elapsed.TotalSeconds > 0 ? _bytesProcessed / elapsed.TotalSeconds : 0;
-        var rateStr = FormatBytes((long)rate) + "/s";
-
         table.AddRow(
             new Markup("[grey]Stats[/]"),
-            new Markup($"[cyan]{_signaturesGenerated}[/] [grey]signatures[/]  [grey]•[/]  [cyan]{sigSize}[/] [grey]processed[/]"),
-            new Markup($"[grey]{elapsedStr}[/]  [grey]•[/]  [cyan]{rateStr}[/]"));
+            new Markup($"[cyan]{_signaturesGenerated}[/] [grey]signatures[/]  [grey]•[/]  [cyan]{FormatBytes(_bytesProcessed)}[/] [grey]processed[/]"),
+            new Markup($"[grey]{elapsedStr}[/]"));
 
         return table;
     }
 
-    private static void AddSlotRow(Table table, int slotNum, SlotState slot)
+    private static string TruncatePath(string path, int maxLength)
     {
-        var slotLabel = $"[cyan][[{slotNum}]][/]";
-
-        if (slot.IsActive)
-        {
-            var fileName = slot.FileName!;
-            // Truncate long filenames
-            if (fileName.Length > 45)
-            {
-                fileName = "..." + fileName[^42..];
-            }
-
-            var progressBar = BuildProgressBar(slot.Progress, 25);
-            table.AddRow(
-                new Markup(slotLabel),
-                new Markup($"[white]{Markup.Escape(fileName)}[/]"),
-                new Markup($"{progressBar} [grey]{slot.Progress:P0}[/]"));
-        }
-        else
-        {
-            table.AddRow(
-                new Markup(slotLabel),
-                new Markup("[grey](idle)[/]"),
-                new Markup("[grey]" + new string('░', 25) + "[/]"));
-        }
+        if (path.Length <= maxLength)
+            return path;
+        return "..." + path[^(maxLength - 3)..];
     }
 
     private static string BuildProgressBar(double percentage, int width)
     {
-        var filled = (int)(percentage * width);
+        // Use ceiling for >= 100% to ensure full bar, round otherwise
+        var filled = percentage >= 1.0
+            ? width
+            : (int)Math.Round(percentage * width);
         var empty = width - filled;
 
         var sb = new StringBuilder();
         sb.Append("[green]");
-        sb.Append('█', filled);
+        sb.Append('█', Math.Max(0, filled));
         sb.Append("[/][grey]");
-        sb.Append('░', empty);
+        sb.Append('░', Math.Max(0, empty));
         sb.Append("[/]");
 
         return sb.ToString();

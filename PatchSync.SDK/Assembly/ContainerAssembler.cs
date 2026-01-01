@@ -1,0 +1,495 @@
+using System.Buffers.Binary;
+using System.Security.Cryptography;
+using PatchSync.Common.Signatures;
+using PatchSync.Common.Storage;
+using PatchSync.SDK.Containers;
+using PatchSync.SDK.Delta;
+using PatchSync.SDK.Sources;
+
+namespace PatchSync.SDK.Assembly;
+
+/// <summary>
+/// Assembles a container file from local entries/chunks and remote downloads.
+/// </summary>
+public sealed class ContainerAssembler
+{
+    private readonly IStorageProvider _storage;
+    private readonly AssemblyOptions _options;
+    private readonly ContainerRegistry _containerRegistry;
+
+    public ContainerAssembler(
+        IStorageProvider storage,
+        AssemblyOptions? options = null,
+        ContainerRegistry? containerRegistry = null)
+    {
+        _storage = storage ?? throw new ArgumentNullException(nameof(storage));
+        _options = options ?? new AssemblyOptions();
+        _containerRegistry = containerRegistry ?? ContainerRegistry.Default;
+    }
+
+    /// <summary>
+    /// Assembles a container according to the virtual delta plan.
+    /// </summary>
+    /// <param name="targetPath">Path where the assembled container will be written.</param>
+    /// <param name="remotePath">Path to the remote container for byte-range requests.</param>
+    /// <param name="plan">The virtual delta plan describing entries to copy/download.</param>
+    /// <param name="localContainerPath">Path to local container (for copying entries).</param>
+    /// <param name="progress">Optional progress reporter.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    public async Task AssembleAsync(
+        string targetPath,
+        string remotePath,
+        VirtualDeltaPlan plan,
+        string? localContainerPath,
+        IProgress<ContainerAssemblyProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        var tempPath = targetPath + ".pstmp";
+
+        try
+        {
+            // Ensure directory exists
+            var dir = Path.GetDirectoryName(targetPath);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+
+            await using var targetStream = new FileStream(
+                tempPath,
+                FileMode.Create,
+                FileAccess.ReadWrite,
+                FileShare.None,
+                bufferSize: _options.BufferSize,
+                FileOptions.Asynchronous);
+
+            // Pre-allocate file size
+            var layout = plan.Signature.Layout;
+            if (layout.TotalSize > 0)
+            {
+                targetStream.SetLength(layout.TotalSize);
+            }
+
+            // Write the structural metadata from HeaderTemplate
+            WriteContainerStructure(targetStream, plan.Signature.ContainerFormat, layout);
+
+            var progressState = new ContainerAssemblyProgressState(plan, progress);
+
+            // Open local container if available
+            FileStream? localContainer = null;
+            if (localContainerPath != null && File.Exists(localContainerPath))
+            {
+                localContainer = new FileStream(
+                    localContainerPath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    bufferSize: _options.BufferSize,
+                    FileOptions.Asynchronous | FileOptions.RandomAccess);
+            }
+
+            try
+            {
+                // Process each entry
+                foreach (var entry in plan.Entries)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    progressState.SetCurrentEntry(entry.EntryId);
+
+                    switch (entry.Method)
+                    {
+                        case EntryMethod.CopyLocal when localContainer != null && entry.LocalSource.HasValue:
+                            await CopyLocalEntryAsync(
+                                targetStream, localContainer, entry,
+                                progressState, cancellationToken);
+                            break;
+
+                        case EntryMethod.DeltaChunks when entry.ChunkPlan != null:
+                            await AssembleEntryDeltaAsync(
+                                targetStream, remotePath, entry, localContainer,
+                                progressState, cancellationToken);
+                            break;
+
+                        case EntryMethod.DownloadFull:
+                        default:
+                            await DownloadEntryAsync(
+                                targetStream, remotePath, entry,
+                                progressState, cancellationToken);
+                            break;
+                    }
+
+                    progressState.EntryComplete();
+                }
+            }
+            finally
+            {
+                if (localContainer != null)
+                    await localContainer.DisposeAsync();
+            }
+
+            // Verify final hash
+            progressState.SetPhase(ContainerAssemblyPhase.Verifying);
+            targetStream.Position = 0;
+            var actualHash = await ComputeHashAsync(targetStream, cancellationToken);
+            var expectedHash = Convert.ToHexString(plan.Signature.ContainerHash).ToLowerInvariant();
+
+            if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException(
+                    $"Container hash mismatch after assembly. Expected: {expectedHash}, Actual: {actualHash}");
+            }
+
+            // Close stream before rename
+            await targetStream.DisposeAsync();
+
+            // Atomic rename
+            if (File.Exists(targetPath))
+                File.Delete(targetPath);
+            File.Move(tempPath, targetPath);
+
+            progressState.ReportComplete();
+        }
+        catch
+        {
+            // Clean up temp file on failure
+            try { File.Delete(tempPath); } catch { }
+            throw;
+        }
+    }
+
+    private async Task CopyLocalEntryAsync(
+        FileStream target,
+        FileStream localContainer,
+        EntryPlan entry,
+        ContainerAssemblyProgressState progress,
+        CancellationToken cancellationToken)
+    {
+        var source = entry.LocalSource!.Value;
+
+        // Copy header + data together (header is at source.Offset - entry.HeaderSize)
+        var sourceOffset = source.Offset - entry.HeaderSize;
+        var totalSize = entry.TotalSize; // HeaderSize + Size
+
+        target.Position = entry.HeaderOffset; // Start at header position
+        localContainer.Position = sourceOffset;
+
+        var buffer = new byte[Math.Min(totalSize, _options.BufferSize)];
+        int remaining = totalSize;
+
+        while (remaining > 0)
+        {
+            int toRead = Math.Min(remaining, buffer.Length);
+            int bytesRead = await localContainer.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken);
+
+            if (bytesRead == 0)
+                throw new EndOfStreamException($"Unexpected end of local container at entry {entry.EntryId}");
+
+            await target.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+            remaining -= bytesRead;
+            progress.AddBytesCopied(bytesRead);
+        }
+    }
+
+    private async Task DownloadEntryAsync(
+        FileStream target,
+        string remotePath,
+        EntryPlan entry,
+        ContainerAssemblyProgressState progress,
+        CancellationToken cancellationToken)
+    {
+        // Download header + data together
+        var totalSize = entry.TotalSize; // HeaderSize + Size
+        target.Position = entry.HeaderOffset; // Start at header position
+
+        await using var remoteStream = await _storage.GetRangeAsync(
+            remotePath, entry.HeaderOffset, totalSize, cancellationToken);
+
+        var buffer = new byte[Math.Min(totalSize, _options.BufferSize)];
+        int remaining = totalSize;
+
+        while (remaining > 0)
+        {
+            int toRead = Math.Min(remaining, buffer.Length);
+            int bytesRead = await remoteStream.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken);
+
+            if (bytesRead == 0)
+                throw new EndOfStreamException($"Unexpected end of remote stream at entry {entry.EntryId}");
+
+            await target.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+            remaining -= bytesRead;
+            progress.AddBytesDownloaded(bytesRead);
+        }
+    }
+
+    private async Task AssembleEntryDeltaAsync(
+        FileStream target,
+        string remotePath,
+        EntryPlan entry,
+        FileStream? localContainer,
+        ContainerAssemblyProgressState progress,
+        CancellationToken cancellationToken)
+    {
+        // Download entry header first (not part of CDC chunks)
+        if (entry.HeaderSize > 0)
+        {
+            target.Position = entry.HeaderOffset;
+            await using var headerStream = await _storage.GetRangeAsync(
+                remotePath, entry.HeaderOffset, entry.HeaderSize, cancellationToken);
+            await DownloadChunkAsync(target, headerStream, entry.HeaderSize, progress, cancellationToken);
+        }
+
+        // Process data chunks
+        foreach (var action in entry.ChunkPlan!.Actions)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Calculate absolute target offset (entry data offset + chunk offset within entry)
+            long absoluteOffset = entry.TargetOffset + action.TargetOffset;
+            target.Position = absoluteOffset;
+
+            switch (action)
+            {
+                case CopyLocal copyLocal when localContainer != null:
+                    localContainer.Position = copyLocal.Source.Offset;
+                    await CopyChunkAsync(target, localContainer, copyLocal.Length, progress, cancellationToken);
+                    break;
+
+                case DownloadRemote downloadRemote:
+                    // Download chunk from container at absolute offset
+                    await using (var remoteStream = await _storage.GetRangeAsync(
+                        remotePath, absoluteOffset, downloadRemote.Length, cancellationToken))
+                    {
+                        await DownloadChunkAsync(target, remoteStream, downloadRemote.Length, progress, cancellationToken);
+                    }
+                    break;
+            }
+        }
+    }
+
+    private async Task CopyChunkAsync(
+        FileStream target,
+        FileStream source,
+        int length,
+        ContainerAssemblyProgressState progress,
+        CancellationToken cancellationToken)
+    {
+        var buffer = new byte[Math.Min(length, _options.BufferSize)];
+        int remaining = length;
+
+        while (remaining > 0)
+        {
+            int toRead = Math.Min(remaining, buffer.Length);
+            int bytesRead = await source.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken);
+
+            if (bytesRead == 0)
+                throw new EndOfStreamException("Unexpected end of source while copying chunk");
+
+            await target.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+            remaining -= bytesRead;
+            progress.AddBytesCopied(bytesRead);
+        }
+    }
+
+    private async Task DownloadChunkAsync(
+        FileStream target,
+        Stream remoteStream,
+        int length,
+        ContainerAssemblyProgressState progress,
+        CancellationToken cancellationToken)
+    {
+        var buffer = new byte[Math.Min(length, _options.BufferSize)];
+        int remaining = length;
+
+        while (remaining > 0)
+        {
+            int toRead = Math.Min(remaining, buffer.Length);
+            int bytesRead = await remoteStream.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken);
+
+            if (bytesRead == 0)
+                throw new EndOfStreamException("Unexpected end of remote stream while downloading chunk");
+
+            await target.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+            remaining -= bytesRead;
+            progress.AddBytesDownloaded(bytesRead);
+        }
+    }
+
+    private static async Task<string> ComputeHashAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        var hash = await SHA256.HashDataAsync(stream, cancellationToken);
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Writes the container structure from the compact HeaderTemplate format.
+    /// </summary>
+    private void WriteContainerStructure(FileStream output, string containerFormat, ContainerLayout layout)
+    {
+        using var templateStream = new MemoryStream(layout.HeaderTemplate);
+
+        // UOP format: [FileHeader: 28][BlockCount: 4][BlockOffset: 8 + BlockData: N]...
+        if (containerFormat == "uop-v1")
+        {
+            const int UopHeaderSize = 28;
+            const int UopEntrySize = 34;
+
+            // Read and write file header
+            var fileHeader = new byte[UopHeaderSize];
+            templateStream.ReadExactly(fileHeader);
+            output.Position = 0;
+            output.Write(fileHeader);
+
+            // Read block count
+            Span<byte> countBuffer = stackalloc byte[4];
+            templateStream.ReadExactly(countBuffer);
+            int blockCount = BinaryPrimitives.ReadInt32LittleEndian(countBuffer);
+
+            // Write each block at its original offset
+            Span<byte> offsetBuffer = stackalloc byte[8];
+            Span<byte> blockHeader = stackalloc byte[12];
+
+            for (int i = 0; i < blockCount; i++)
+            {
+                templateStream.ReadExactly(offsetBuffer);
+                long blockOffset = BinaryPrimitives.ReadInt64LittleEndian(offsetBuffer);
+
+                // Read block header to determine entry count
+                templateStream.ReadExactly(blockHeader);
+                int entryCount = BinaryPrimitives.ReadInt32LittleEndian(blockHeader[0..4]);
+
+                // Write block header at its offset
+                output.Position = blockOffset;
+                output.Write(blockHeader);
+
+                // Read and write entry metadata
+                var entryData = new byte[entryCount * UopEntrySize];
+                templateStream.ReadExactly(entryData);
+                output.Write(entryData);
+            }
+
+            // Entry headers are now downloaded/copied with entry data, not stored in layout
+        }
+        else
+        {
+            // Generic fallback: write HeaderTemplate as-is
+            output.Position = 0;
+            output.Write(layout.HeaderTemplate);
+        }
+    }
+
+    private sealed class ContainerAssemblyProgressState
+    {
+        private readonly VirtualDeltaPlan _plan;
+        private readonly IProgress<ContainerAssemblyProgress>? _progress;
+        private readonly System.Diagnostics.Stopwatch _stopwatch;
+        private long _bytesDownloaded;
+        private long _bytesCopied;
+        private int _entriesComplete;
+        private string? _currentEntry;
+        private ContainerAssemblyPhase _phase;
+
+        public ContainerAssemblyProgressState(VirtualDeltaPlan plan, IProgress<ContainerAssemblyProgress>? progress)
+        {
+            _plan = plan;
+            _progress = progress;
+            _stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            _phase = ContainerAssemblyPhase.Assembling;
+        }
+
+        public void SetCurrentEntry(string entryId)
+        {
+            _currentEntry = entryId;
+        }
+
+        public void SetPhase(ContainerAssemblyPhase phase)
+        {
+            _phase = phase;
+            Report();
+        }
+
+        public void EntryComplete()
+        {
+            _entriesComplete++;
+            Report();
+        }
+
+        public void AddBytesDownloaded(int bytes)
+        {
+            _bytesDownloaded += bytes;
+            Report();
+        }
+
+        public void AddBytesCopied(int bytes)
+        {
+            _bytesCopied += bytes;
+            Report();
+        }
+
+        public void ReportComplete()
+        {
+            _phase = ContainerAssemblyPhase.Complete;
+            Report();
+        }
+
+        private void Report()
+        {
+            if (_progress == null) return;
+
+            var complete = _bytesDownloaded + _bytesCopied;
+            var elapsed = _stopwatch.Elapsed.TotalSeconds;
+            var speed = elapsed > 0.001 ? complete / elapsed : 0;
+
+            _progress.Report(new ContainerAssemblyProgress(
+                Phase: _phase,
+                BytesComplete: complete,
+                BytesTotal: _plan.TotalBytes,
+                BytesDownloaded: _bytesDownloaded,
+                BytesCopied: _bytesCopied,
+                BytesPerSecond: speed,
+                EntriesComplete: _entriesComplete,
+                EntriesTotal: _plan.Entries.Count,
+                CurrentEntry: _currentEntry));
+        }
+    }
+}
+
+/// <summary>
+/// Progress information during container assembly.
+/// </summary>
+public readonly record struct ContainerAssemblyProgress(
+    ContainerAssemblyPhase Phase,
+    long BytesComplete,
+    long BytesTotal,
+    long BytesDownloaded,
+    long BytesCopied,
+    double BytesPerSecond,
+    int EntriesComplete,
+    int EntriesTotal,
+    string? CurrentEntry)
+{
+    /// <summary>
+    /// Completion percentage (0.0 to 1.0).
+    /// </summary>
+    public double Percentage => BytesTotal > 0 ? (double)BytesComplete / BytesTotal : 0;
+
+    /// <summary>
+    /// Estimated time remaining.
+    /// </summary>
+    public TimeSpan EstimatedRemaining =>
+        BytesPerSecond > 0 && BytesComplete < BytesTotal
+            ? TimeSpan.FromSeconds((BytesTotal - BytesComplete) / BytesPerSecond)
+            : TimeSpan.Zero;
+}
+
+/// <summary>
+/// Current phase of container assembly.
+/// </summary>
+public enum ContainerAssemblyPhase
+{
+    /// <summary>Preparing to assemble.</summary>
+    Preparing,
+    /// <summary>Actively copying/downloading entries.</summary>
+    Assembling,
+    /// <summary>Verifying final hash.</summary>
+    Verifying,
+    /// <summary>Assembly complete.</summary>
+    Complete
+}
