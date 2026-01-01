@@ -274,6 +274,28 @@ class Program
         var lastReportTime = DateTime.UtcNow;
         var lastPhase = PatchPhase.Starting;
         var consoleLock = new object();
+        var progressBarActive = false;
+        const int ProgressBarWidth = 110;
+
+        // Helper to clear progress bar and print a line
+        void ClearProgressAndPrint(string message)
+        {
+            if (progressBarActive)
+            {
+                // Move to start of line, clear it, then print
+                Console.Write($"\r{new string(' ', ProgressBarWidth)}\r");
+            }
+            Console.WriteLine(message);
+            progressBarActive = false;
+        }
+
+        // Helper to write progress bar (overwrites current line)
+        void WriteProgressBar(string progressLine)
+        {
+            Console.Write($"\r{progressLine.PadRight(ProgressBarWidth)}");
+            Console.Out.Flush();
+            progressBarActive = true;
+        }
 
         // Create progress handler
         var progress = new Progress<PatchProgress>(p =>
@@ -285,13 +307,16 @@ class Program
                 // Always report phase changes
                 if (p.Phase != lastPhase)
                 {
-                    if (lastPhase == PatchPhase.Processing || lastPhase == PatchPhase.Verifying)
+                    if (progressBarActive)
                     {
-                        Console.WriteLine(); // Clear line after progress bar
+                        ClearProgressAndPrint(""); // Clear and newline
+                    }
+                    else
+                    {
+                        Console.WriteLine();
                     }
 
                     lastPhase = p.Phase;
-                    Console.WriteLine();
 
                     switch (p.Phase)
                     {
@@ -310,8 +335,8 @@ class Program
                 // Log file completions (contains timing info)
                 if (p.CurrentFile != null && p.CurrentFile.StartsWith("Completed:"))
                 {
-                    Console.WriteLine($"  {p.CurrentFile}");
-                    return; // Don't update progress bar after completion message
+                    ClearProgressAndPrint($"  {p.CurrentFile}");
+                    return;
                 }
 
                 if ((now - lastReportTime).TotalMilliseconds < 100 && p.Phase != PatchPhase.Complete)
@@ -327,7 +352,7 @@ class Program
                         if (p.CurrentFile != null)
                         {
                             var planPct = p.FilesTotal > 0 ? (double)p.FilesComplete / p.FilesTotal * 100 : 0;
-                            Console.Write($"\r  Planning: {p.FilesComplete}/{p.FilesTotal} ({planPct:F0}%) - {TruncatePath(p.CurrentFile, 35)}".PadRight(80));
+                            WriteProgressBar($"  Planning: {p.FilesComplete}/{p.FilesTotal} ({planPct:F0}%) - {TruncatePath(p.CurrentFile, 35)}");
                         }
                         break;
 
@@ -336,17 +361,16 @@ class Program
                         var filePct = p.FilesTotal > 0 ? (double)p.FilesComplete / p.FilesTotal : 0;
                         var bar = BuildProgressBar(filePct, 20);
                         var fileInfo = p.CurrentFile != null ? TruncatePath(p.CurrentFile, 20) : "";
-                        Console.Write($"\r  {bar} {filePct * 100,5:F1}% | {FormatSize((long)speed)}/s | {FormatSize(p.BytesDownloaded)}↓ {FormatSize(p.BytesCopied)}↔ | {p.FilesComplete}/{p.FilesTotal} | {fileInfo}".PadRight(110));
+                        WriteProgressBar($"  {bar} {filePct * 100,5:F1}% | {FormatSize((long)speed)}/s | {FormatSize(p.BytesDownloaded)}↓ {FormatSize(p.BytesCopied)}↔ | {p.FilesComplete}/{p.FilesTotal} | {fileInfo}");
                         break;
 
                     case PatchPhase.Verifying:
                         var verifyPct = p.FilesTotal > 0 ? (double)p.FilesComplete / p.FilesTotal * 100 : 0;
-                        Console.Write($"\r  Verified: {p.FilesComplete}/{p.FilesTotal} ({verifyPct:F0}%)".PadRight(60));
+                        WriteProgressBar($"  Verified: {p.FilesComplete}/{p.FilesTotal} ({verifyPct:F0}%)");
                         break;
 
                     case PatchPhase.Complete:
-                        Console.WriteLine();
-                        Console.WriteLine();
+                        ClearProgressAndPrint("");
                         Console.WriteLine("[COMMIT] Changes applied successfully!");
                         Console.WriteLine();
                         Console.WriteLine($"Patch complete!");
