@@ -31,6 +31,7 @@ public static class CliBuilder
         // Add subcommands
         rootCommand.Add(BuildInitCommand());
         rootCommand.Add(BuildBuildCommand());
+        rootCommand.Add(BuildScanCommand());
         rootCommand.Add(BuildPatchCommand());
         rootCommand.Add(BuildVerifyCommand());
         rootCommand.Add(BuildUploadCommand());
@@ -216,6 +217,58 @@ public static class CliBuilder
             if (staged) { args.Add("--staged"); }
 
             return await BuildCommand.RunAsync(args.ToArray());
+        });
+
+        return command;
+    }
+
+    #endregion
+
+    #region Scan Command
+
+    private static Command BuildScanCommand()
+    {
+        var urlOption = new Option<string?>("--url", "-u")
+        {
+            Description = "Base URL for manifest"
+        };
+
+        var pathOption = new Option<string?>("--path", "-p")
+        {
+            Description = "Local installation path to scan"
+        };
+
+        var detailsOption = new Option<bool>("--details", "-d")
+        {
+            Description = "Show detailed file list"
+        };
+
+        var manifestOption = new Option<string?>("--manifest", "-m")
+        {
+            Description = "Manifest file path (default: manifest.json)"
+        };
+
+        var command = new Command("scan", "Scan local installation against manifest")
+        {
+            urlOption,
+            pathOption,
+            detailsOption,
+            manifestOption
+        };
+
+        command.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var url = parseResult.GetValue(urlOption);
+            var path = parseResult.GetValue(pathOption);
+            var details = parseResult.GetValue(detailsOption);
+            var manifest = parseResult.GetValue(manifestOption);
+
+            var args = BuildArgs(
+                ("url", url),
+                ("path", path),
+                ("manifest", manifest),
+                ("details", details ? "true" : null));
+            return await ScanCommand.RunAsync(args);
         });
 
         return command;
