@@ -53,6 +53,15 @@ public static class CommandRegistry
 
         Register(new CommandInfo
         {
+            Name = "scan",
+            Description = "Scan local installation against manifest",
+            Icon = ":magnifying_glass_tilted_left:",
+            Handler = ScanCommand.RunAsync,
+            WizardHandler = ScanCommand.RunWizardAsync
+        });
+
+        Register(new CommandInfo
+        {
             Name = "verify",
             Description = "Verify local files against manifest",
             Icon = ":check_mark_button:",

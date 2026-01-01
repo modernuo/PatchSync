@@ -6,6 +6,7 @@ using PatchSync.Common.Signatures;
 using PatchSync.Common.Storage;
 using PatchSync.SDK.Assembly;
 using PatchSync.SDK.Delta;
+using PatchSync.SDK.Engine;
 using PatchSync.SDK.Sources;
 
 namespace PatchSync.SDK.Client;
@@ -20,6 +21,7 @@ public sealed class PatchSyncClient : IDisposable
     private readonly PatchClientOptions _options;
     private readonly FileAssembler _assembler;
     private readonly DownloadStrategySelector _strategySelector;
+    private readonly PatchEngine _engine;
 
     public PatchSyncClient(
         IStorageProvider storage,
@@ -31,6 +33,13 @@ public sealed class PatchSyncClient : IDisposable
         _options = options ?? new PatchClientOptions();
         _assembler = new FileAssembler(storage, _options.AssemblyOptions);
         _strategySelector = new DownloadStrategySelector(_options.DeltaThreshold);
+        _engine = new PatchEngine(storage, chunkerRegistry, containerRegistry: null, new PatchEngineOptions
+        {
+            MaxConcurrency = _options.MaxConcurrency,
+            DeltaThreshold = _options.DeltaThreshold,
+            FallbackOnVerifyFailure = _options.VerifyAfterPatch,
+            AssemblyOptions = _options.AssemblyOptions
+        });
     }
 
     /// <summary>
@@ -51,6 +60,11 @@ public sealed class PatchSyncClient : IDisposable
 
     /// <summary>
     /// Applies patches to bring the local installation up to date with the manifest.
+    /// Uses a phased approach for safety:
+    /// 1. Plan: Calculate delta plans for all files
+    /// 2. Assemble: Download/copy chunks to temp files (parallel)
+    /// 3. Commit: Atomically swap temp files to final locations
+    /// 4. Verify: Hash-verify all files, fallback to full download for failures
     /// </summary>
     public async Task PatchAsync(
         string localPath,
@@ -58,264 +72,164 @@ public sealed class PatchSyncClient : IDisposable
         IProgress<PatchProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        // Validate we support at least one algorithm
-        if (!_chunkerRegistry.TryGetChunker(manifest.PreferredAlgorithm, out var chunker))
-        {
-            var supported = manifest.SupportedAlgorithms
-                .FirstOrDefault(a => _chunkerRegistry.SupportedAlgorithms.Contains(a));
-
-            if (supported == null)
+        // Adapter to convert PatchEngineProgress to PatchProgress
+        var engineProgress = progress != null
+            ? new Progress<PatchEngineProgress>(p =>
             {
-                throw new NotSupportedException(
-                    $"No supported chunking algorithms. Server supports: {string.Join(", ", manifest.SupportedAlgorithms)}. " +
-                    $"Client supports: {string.Join(", ", _chunkerRegistry.SupportedAlgorithms)}");
-            }
+                var phase = p.Phase switch
+                {
+                    PatchEnginePhase.Planning => PatchPhase.Starting,
+                    PatchEnginePhase.Assembling => PatchPhase.Processing,
+                    PatchEnginePhase.Committing => PatchPhase.Processing,
+                    PatchEnginePhase.Verifying => PatchPhase.Verifying,
+                    PatchEnginePhase.Complete => PatchPhase.Complete,
+                    _ => PatchPhase.Processing
+                };
 
-            chunker = _chunkerRegistry.GetPreferred(new[] { supported });
+                progress.Report(new PatchProgress(
+                    phase,
+                    p.FilesComplete,
+                    p.FilesTotal,
+                    p.BytesComplete,
+                    p.BytesTotal,
+                    p.CurrentStatus,
+                    p.Percentage));
+            })
+            : null;
+
+        var result = await _engine.PatchAsync(localPath, manifest, engineProgress, cancellationToken);
+
+        if (!result.Success && result.FilesFailed > 0)
+        {
+            throw new InvalidOperationException(
+                $"Patch completed with {result.FilesFailed} verification failures. {result.Message}");
         }
+    }
 
-        var filesToProcess = manifest.Files
-            .Where(f => f.Strategy != UpdateStrategy.Delete)
-            .ToList();
+    /// <summary>
+    /// Scans the local installation against the manifest to determine what needs updating.
+    /// Does not download or modify any files.
+    /// </summary>
+    public async Task<ScanResult> ScanAsync(
+        string localPath,
+        GameManifest manifest,
+        IProgress<ScanProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        var upToDate = new List<FileStatus>();
+        var needsUpdate = new List<FileStatus>();
+        var missing = new List<FileStatus>();
+        var toDelete = new List<FileStatus>();
 
-        var totalBytes = filesToProcess.Sum(f => f.Size);
-        var processedBytes = 0L;
-        var processedFiles = 0;
+        var files = manifest.Files.ToList();
+        var scanned = 0;
 
-        progress?.Report(new PatchProgress(
-            PatchPhase.Starting,
-            0, filesToProcess.Count,
-            0, totalBytes,
-            null, 0));
-
-        foreach (var file in filesToProcess)
+        foreach (var file in files)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            progress?.Report(new ScanProgress(scanned, files.Count, file.Path));
+
             var localFilePath = Path.Combine(localPath, file.Path.Replace('/', Path.DirectorySeparatorChar));
-            var fileProgress = new FileProgress(file.Path);
 
-            progress?.Report(new PatchProgress(
-                PatchPhase.Processing,
-                processedFiles, filesToProcess.Count,
-                processedBytes, totalBytes,
-                file.Path, 0));
+            if (file.Strategy == UpdateStrategy.Delete)
+            {
+                if (File.Exists(localFilePath))
+                {
+                    toDelete.Add(new FileStatus(file.Path, file.Size, FileStatusType.ToDelete, null, file.Hash, file.Strategy));
+                }
+            }
+            else if (!File.Exists(localFilePath))
+            {
+                missing.Add(new FileStatus(file.Path, file.Size, FileStatusType.Missing, null, file.Hash, file.Strategy));
+            }
+            else
+            {
+                var localHash = await ComputeFileHashAsync(localFilePath, cancellationToken);
+                if (string.Equals(localHash, file.Hash, StringComparison.OrdinalIgnoreCase))
+                {
+                    upToDate.Add(new FileStatus(file.Path, file.Size, FileStatusType.UpToDate, localHash, file.Hash, file.Strategy));
+                }
+                else
+                {
+                    needsUpdate.Add(new FileStatus(file.Path, file.Size, FileStatusType.NeedsUpdate, localHash, file.Hash, file.Strategy));
+                }
+            }
 
-            await ProcessFileAsync(
-                localFilePath, file, chunker, manifest,
-                p => progress?.Report(new PatchProgress(
-                    PatchPhase.Processing,
-                    processedFiles, filesToProcess.Count,
-                    processedBytes + (long)(file.Size * p), totalBytes,
-                    file.Path, p)),
-                cancellationToken);
-
-            processedBytes += file.Size;
-            processedFiles++;
+            scanned++;
         }
 
-        // Handle deletions
-        var filesToDelete = manifest.Files
-            .Where(f => f.Strategy == UpdateStrategy.Delete)
+        progress?.Report(new ScanProgress(scanned, files.Count, null));
+
+        return new ScanResult
+        {
+            UpToDate = upToDate,
+            NeedsUpdate = needsUpdate,
+            Missing = missing,
+            ToDelete = toDelete
+        };
+    }
+
+    /// <summary>
+    /// Verifies all local files against the manifest.
+    /// Returns detailed results about which files pass/fail verification.
+    /// </summary>
+    public async Task<VerifyResult> VerifyAsync(
+        string localPath,
+        GameManifest manifest,
+        IProgress<VerifyProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        var passed = new List<FileStatus>();
+        var failed = new List<FileStatus>();
+
+        var files = manifest.Files
+            .Where(f => f.Strategy != UpdateStrategy.Delete)
             .ToList();
 
-        foreach (var file in filesToDelete)
+        var verified = 0;
+
+        foreach (var file in files)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            progress?.Report(new VerifyProgress(
+                verified, files.Count,
+                passed.Count, failed.Count,
+                file.Path));
+
             var localFilePath = Path.Combine(localPath, file.Path.Replace('/', Path.DirectorySeparatorChar));
-            if (File.Exists(localFilePath))
+
+            if (!File.Exists(localFilePath))
             {
-                File.Delete(localFilePath);
+                failed.Add(new FileStatus(file.Path, file.Size, FileStatusType.Missing, null, file.Hash));
             }
-        }
-
-        progress?.Report(new PatchProgress(
-            PatchPhase.Complete,
-            processedFiles, filesToProcess.Count,
-            totalBytes, totalBytes,
-            null, 1.0));
-    }
-
-    private async Task ProcessFileAsync(
-        string localFilePath,
-        ManifestFile file,
-        IChunker chunker,
-        GameManifest manifest,
-        Action<double>? progressCallback,
-        CancellationToken cancellationToken)
-    {
-        // Check if file exists and matches hash
-        if (File.Exists(localFilePath))
-        {
-            var localHash = await ComputeFileHashAsync(localFilePath, cancellationToken);
-            if (string.Equals(localHash, file.Hash, StringComparison.OrdinalIgnoreCase))
+            else
             {
-                progressCallback?.Invoke(1.0);
-                return; // File is up to date
-            }
-        }
-
-        // Determine update strategy
-        switch (file.Strategy)
-        {
-            case UpdateStrategy.HashCheck:
-            case UpdateStrategy.AlwaysCompressed:
-                await DownloadFullFileAsync(localFilePath, file, manifest, cancellationToken);
-                break;
-
-            case UpdateStrategy.CreateOnly:
-                if (!File.Exists(localFilePath))
+                var localHash = await ComputeFileHashAsync(localFilePath, cancellationToken);
+                if (string.Equals(localHash, file.Hash, StringComparison.OrdinalIgnoreCase))
                 {
-                    await DownloadFullFileAsync(localFilePath, file, manifest, cancellationToken);
+                    passed.Add(new FileStatus(file.Path, file.Size, FileStatusType.UpToDate, localHash, file.Hash));
                 }
-                break;
-
-            case UpdateStrategy.Delta:
-            default:
-                await DeltaPatchFileAsync(localFilePath, file, chunker, manifest, progressCallback, cancellationToken);
-                break;
-        }
-
-        progressCallback?.Invoke(1.0);
-    }
-
-    private async Task DeltaPatchFileAsync(
-        string localFilePath,
-        ManifestFile file,
-        IChunker chunker,
-        GameManifest manifest,
-        Action<double>? progressCallback,
-        CancellationToken cancellationToken)
-    {
-        // Download signature
-        var signaturePath = file.SignatureUrl ?? $"signatures/{file.Path}.sig";
-        await using var sigStream = await _storage.GetAsync(signaturePath, cancellationToken);
-        var signature = SignatureFile.Read(sigStream);
-
-        // Build local chunk source if file exists
-        IChunkSource localSource;
-        if (File.Exists(localFilePath))
-        {
-            localSource = LocalFileSource.Build(
-                localFilePath,
-                chunker,
-                signature.GetChunkingOptions());
-        }
-        else
-        {
-            localSource = new CompositeChunkSource();
-        }
-
-        // Calculate delta
-        var calculator = new DeltaCalculator();
-        var plan = calculator.Calculate(signature, localSource);
-
-        // Decide strategy
-        var decision = _strategySelector.Select(
-            plan,
-            file.CompressedSize,
-            file.Size);
-
-        if (decision.Method == DownloadMethod.Compressed && !string.IsNullOrEmpty(file.CompressedUrl))
-        {
-            await DownloadCompressedFileAsync(localFilePath, file, manifest, cancellationToken);
-            return;
-        }
-
-        if (decision.Method == DownloadMethod.Full)
-        {
-            await DownloadFullFileAsync(localFilePath, file, manifest, cancellationToken);
-            return;
-        }
-
-        // Delta patch
-        var remotePath = file.Path;
-        var assemblyProgress = new Progress<AssemblyProgress>(p =>
-            progressCallback?.Invoke(p.Percentage));
-
-        await _assembler.AssembleAsync(
-            localFilePath,
-            remotePath,
-            plan,
-            file.Hash,
-            assemblyProgress,
-            cancellationToken);
-    }
-
-    private async Task DownloadFullFileAsync(
-        string localFilePath,
-        ManifestFile file,
-        GameManifest manifest,
-        CancellationToken cancellationToken)
-    {
-        var dir = Path.GetDirectoryName(localFilePath);
-        if (!string.IsNullOrEmpty(dir))
-            Directory.CreateDirectory(dir);
-
-        var tempPath = localFilePath + ".pstmp";
-
-        try
-        {
-            await using var remoteStream = await _storage.GetAsync(file.Path, cancellationToken);
-            await using var fileStream = new FileStream(
-                tempPath,
-                FileMode.Create,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 81920,
-                FileOptions.Asynchronous);
-
-            await remoteStream.CopyToAsync(fileStream, cancellationToken);
-            await fileStream.FlushAsync(cancellationToken);
-            await fileStream.DisposeAsync();
-
-            // Verify hash
-            var hash = await ComputeFileHashAsync(tempPath, cancellationToken);
-            if (!string.Equals(hash, file.Hash, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidDataException(
-                    $"Hash mismatch for {file.Path}. Expected: {file.Hash}, Actual: {hash}");
+                else
+                {
+                    failed.Add(new FileStatus(file.Path, file.Size, FileStatusType.NeedsUpdate, localHash, file.Hash));
+                }
             }
 
-            // Atomic rename
-            if (File.Exists(localFilePath))
-                File.Delete(localFilePath);
-            File.Move(tempPath, localFilePath);
+            verified++;
         }
-        catch
+
+        progress?.Report(new VerifyProgress(
+            verified, files.Count,
+            passed.Count, failed.Count,
+            null));
+
+        return new VerifyResult
         {
-            try { File.Delete(tempPath); } catch { }
-            throw;
-        }
-    }
-
-    private async Task DownloadCompressedFileAsync(
-        string localFilePath,
-        ManifestFile file,
-        GameManifest manifest,
-        CancellationToken cancellationToken)
-    {
-        // For now, compressed downloads decompress in memory
-        // Could be improved with streaming decompression
-        var compressedPath = file.CompressedUrl ?? $"compressed/{file.Path}.zst";
-        var dir = Path.GetDirectoryName(localFilePath);
-        if (!string.IsNullOrEmpty(dir))
-            Directory.CreateDirectory(dir);
-
-        var tempPath = localFilePath + ".pstmp";
-
-        try
-        {
-            await using var compressedStream = await _storage.GetAsync(compressedPath, cancellationToken);
-
-            // TODO: Add Zstandard decompression
-            // For now, fall back to full download
-            await DownloadFullFileAsync(localFilePath, file, manifest, cancellationToken);
-        }
-        catch
-        {
-            try { File.Delete(tempPath); } catch { }
-            throw;
-        }
+            Passed = passed,
+            Failed = failed
+        };
     }
 
     private static async Task<string> ComputeFileHashAsync(string filePath, CancellationToken cancellationToken)
@@ -334,6 +248,7 @@ public sealed class PatchSyncClient : IDisposable
 
     public void Dispose()
     {
+        _engine.Dispose();
         if (_storage is IDisposable disposable)
         {
             disposable.Dispose();
@@ -403,13 +318,184 @@ public enum PatchPhase
 }
 
 /// <summary>
-/// Progress for an individual file.
+/// Progress information during scanning.
 /// </summary>
-internal sealed class FileProgress
+public readonly record struct ScanProgress(
+    int FilesScanned,
+    int FilesTotal,
+    string? CurrentFile)
 {
-    public string Path { get; }
-    public long BytesComplete { get; set; }
-    public long BytesTotal { get; set; }
+    /// <summary>
+    /// Completion percentage (0.0 to 1.0).
+    /// </summary>
+    public double Percentage => FilesTotal > 0 ? (double)FilesScanned / FilesTotal : 0;
+}
 
-    public FileProgress(string path) => Path = path;
+/// <summary>
+/// Result of scanning a single file.
+/// </summary>
+public readonly record struct FileStatus(
+    string Path,
+    long Size,
+    FileStatusType Status,
+    string? LocalHash,
+    string ExpectedHash,
+    UpdateStrategy Strategy = UpdateStrategy.Delta);
+
+/// <summary>
+/// Status type for a file.
+/// </summary>
+public enum FileStatusType
+{
+    /// <summary>File matches manifest - up to date.</summary>
+    UpToDate,
+    /// <summary>File exists but hash differs - needs update.</summary>
+    NeedsUpdate,
+    /// <summary>File missing locally - needs download.</summary>
+    Missing,
+    /// <summary>File exists locally but not in manifest - orphaned.</summary>
+    Orphaned,
+    /// <summary>File should be deleted per manifest.</summary>
+    ToDelete
+}
+
+/// <summary>
+/// Result of scanning an installation.
+/// </summary>
+public sealed class ScanResult
+{
+    /// <summary>Files that are up to date.</summary>
+    public IReadOnlyList<FileStatus> UpToDate { get; init; } = Array.Empty<FileStatus>();
+
+    /// <summary>Files that need updating.</summary>
+    public IReadOnlyList<FileStatus> NeedsUpdate { get; init; } = Array.Empty<FileStatus>();
+
+    /// <summary>Files that are missing.</summary>
+    public IReadOnlyList<FileStatus> Missing { get; init; } = Array.Empty<FileStatus>();
+
+    /// <summary>Files to delete.</summary>
+    public IReadOnlyList<FileStatus> ToDelete { get; init; } = Array.Empty<FileStatus>();
+
+    /// <summary>
+    /// Total worst-case bytes that need to be downloaded (if all files were downloaded fully).
+    /// For actual delta-aware estimates, use <see cref="GetStrategyBreakdown"/>.
+    /// </summary>
+    public long BytesToDownload => NeedsUpdate.Sum(f => f.Size) + Missing.Sum(f => f.Size);
+
+    /// <summary>True if the installation is fully up to date.</summary>
+    public bool IsUpToDate => NeedsUpdate.Count == 0 && Missing.Count == 0 && ToDelete.Count == 0;
+
+    /// <summary>Total number of files in manifest.</summary>
+    public int TotalFiles => UpToDate.Count + NeedsUpdate.Count + Missing.Count;
+
+    /// <summary>
+    /// Gets a breakdown of files by update strategy, with estimated download bytes.
+    /// </summary>
+    /// <remarks>
+    /// Estimates are based on typical delta ratios:
+    /// - Delta: ~20% of file size for existing files, 100% for missing
+    /// - VirtualDelta: ~10% of file size for existing files, 100% for missing
+    /// - HashCheck/AlwaysCompressed: 100% of file size
+    /// Actual savings depend on file content and local file state.
+    /// </remarks>
+    public ScanStrategyBreakdown GetStrategyBreakdown()
+    {
+        var allFiles = NeedsUpdate.Concat(Missing).ToList();
+
+        var deltaFiles = allFiles.Where(f => f.Strategy == UpdateStrategy.Delta).ToList();
+        var virtualDeltaFiles = allFiles.Where(f => f.Strategy == UpdateStrategy.VirtualDelta).ToList();
+        var fullDownloadFiles = allFiles.Where(f =>
+            f.Strategy == UpdateStrategy.HashCheck ||
+            f.Strategy == UpdateStrategy.AlwaysCompressed ||
+            f.Strategy == UpdateStrategy.CreateOnly).ToList();
+
+        // Estimate delta savings: existing files can use delta, missing files need full download
+        long deltaWorstCase = deltaFiles.Sum(f => f.Size);
+        long deltaEstimated = deltaFiles.Sum(f =>
+            f.Status == FileStatusType.NeedsUpdate
+                ? (long)(f.Size * 0.20) // ~20% for updates
+                : f.Size);              // 100% for missing
+
+        long virtualDeltaWorstCase = virtualDeltaFiles.Sum(f => f.Size);
+        long virtualDeltaEstimated = virtualDeltaFiles.Sum(f =>
+            f.Status == FileStatusType.NeedsUpdate
+                ? (long)(f.Size * 0.10) // ~10% for container updates
+                : f.Size);              // 100% for missing
+
+        long fullDownloadTotal = fullDownloadFiles.Sum(f => f.Size);
+
+        return new ScanStrategyBreakdown(
+            DeltaFileCount: deltaFiles.Count,
+            DeltaWorstCaseBytes: deltaWorstCase,
+            DeltaEstimatedBytes: deltaEstimated,
+            VirtualDeltaFileCount: virtualDeltaFiles.Count,
+            VirtualDeltaWorstCaseBytes: virtualDeltaWorstCase,
+            VirtualDeltaEstimatedBytes: virtualDeltaEstimated,
+            FullDownloadFileCount: fullDownloadFiles.Count,
+            FullDownloadBytes: fullDownloadTotal,
+            TotalWorstCaseBytes: BytesToDownload,
+            TotalEstimatedBytes: deltaEstimated + virtualDeltaEstimated + fullDownloadTotal);
+    }
+}
+
+/// <summary>
+/// Breakdown of files by update strategy with download estimates.
+/// </summary>
+public readonly record struct ScanStrategyBreakdown(
+    int DeltaFileCount,
+    long DeltaWorstCaseBytes,
+    long DeltaEstimatedBytes,
+    int VirtualDeltaFileCount,
+    long VirtualDeltaWorstCaseBytes,
+    long VirtualDeltaEstimatedBytes,
+    int FullDownloadFileCount,
+    long FullDownloadBytes,
+    long TotalWorstCaseBytes,
+    long TotalEstimatedBytes)
+{
+    /// <summary>
+    /// Estimated savings from delta patching.
+    /// </summary>
+    public long EstimatedSavings => TotalWorstCaseBytes - TotalEstimatedBytes;
+
+    /// <summary>
+    /// Estimated savings percentage (0.0 to 1.0).
+    /// </summary>
+    public double SavingsPercentage => TotalWorstCaseBytes > 0
+        ? (double)EstimatedSavings / TotalWorstCaseBytes
+        : 0;
+}
+
+/// <summary>
+/// Progress information during verification.
+/// </summary>
+public readonly record struct VerifyProgress(
+    int FilesVerified,
+    int FilesTotal,
+    int FilesPassed,
+    int FilesFailed,
+    string? CurrentFile)
+{
+    /// <summary>
+    /// Completion percentage (0.0 to 1.0).
+    /// </summary>
+    public double Percentage => FilesTotal > 0 ? (double)FilesVerified / FilesTotal : 0;
+}
+
+/// <summary>
+/// Result of verification.
+/// </summary>
+public sealed class VerifyResult
+{
+    /// <summary>Files that passed verification.</summary>
+    public IReadOnlyList<FileStatus> Passed { get; init; } = Array.Empty<FileStatus>();
+
+    /// <summary>Files that failed verification (hash mismatch or missing).</summary>
+    public IReadOnlyList<FileStatus> Failed { get; init; } = Array.Empty<FileStatus>();
+
+    /// <summary>True if all files passed verification.</summary>
+    public bool Success => Failed.Count == 0;
+
+    /// <summary>Total files verified.</summary>
+    public int TotalFiles => Passed.Count + Failed.Count;
 }
