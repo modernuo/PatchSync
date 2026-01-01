@@ -1,3 +1,4 @@
+using PatchSync.CLI.Wizard;
 using Spectre.Console;
 
 namespace PatchSync.CLI.Commands;
@@ -137,12 +138,22 @@ public static class CommandRegistry
             .Append(":cross_mark: Exit")
             .ToList();
 
-        var selection = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[yellow]Select a command:[/]")
-                .PageSize(10)
-                .HighlightStyle(new Style(Color.Green))
-                .AddChoices(choices));
+        var prompt = new SelectionPrompt<string>()
+            .Title("[yellow]Select a command:[/]\n[grey]Ctrl+C to exit[/]")
+            .PageSize(10)
+            .HighlightStyle(new Style(Color.Green))
+            .AddChoices(choices);
+
+        string selection;
+        try
+        {
+            selection = await prompt.ShowAsync(AnsiConsole.Console, InteractiveCancellation.Instance.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            InteractiveCancellation.Instance.Reset();
+            return 0;
+        }
 
         if (selection.Contains("Exit"))
         {

@@ -358,12 +358,12 @@ public static class VersionsCommand
         // Select target version if not specified
         if (string.IsNullOrEmpty(targetVersion))
         {
-            targetVersion = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[green]Select version to rollback to:[/]")
-                    .AddChoices(versions.Select(v =>
-                        $"{v.Version} - published {v.Metadata.Publish!.PublishedAt:g}")));
+            var versionPrompt = new SelectionPrompt<string>()
+                .Title("[green]Select version to rollback to:[/]")
+                .AddChoices(versions.Select(v =>
+                    $"{v.Version} - published {v.Metadata.Publish!.PublishedAt:g}"));
 
+            targetVersion = await versionPrompt.ShowAsync(AnsiConsole.Console, CancellationToken.None);
             targetVersion = targetVersion.Split(' ')[0];
         }
 

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using PatchSync.CLI.Wizard;
 using Spectre.Console;
 
 namespace PatchSync.CLI.Prompts;
@@ -114,15 +115,17 @@ public class FileBrowser
     }
 
     /// <summary>
-    /// Show the browser and get the selected path.
+    /// Show the browser and get the selected path (async with cancellation support).
     /// </summary>
-    public string Browse()
+    public async Task<string> BrowseAsync(CancellationToken cancellationToken = default)
     {
         var currentDir = Directory.Exists(WorkingDirectory) ? WorkingDirectory : UserProfilePath;
         var lastValidDir = currentDir;
 
         while (true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var choices = new List<(string Display, string Path, ChoiceType Type)>();
 
             // Get directories safely
@@ -229,19 +232,19 @@ public class FileBrowser
             var currentDisplay = TruncatePath(currentDir, maxPathLength);
 
             var prompt = new SelectionPrompt<string>()
-                .Title($"{title}\n[grey]Current:[/] [blue]{currentDisplay}[/]")
+                .Title($"{title}\n[grey]Current:[/] [blue]{currentDisplay}[/]\n[grey]Ctrl+C to go back[/]")
                 .PageSize(PageSize)
                 .HighlightStyle(new Style(Color.Cyan1))
                 .MoreChoicesText("[grey]↑↓ to navigate, Enter to select[/]")
                 .AddChoices(choices.Select(c => c.Display));
 
-            var selected = AnsiConsole.Prompt(prompt);
+            var selected = await prompt.ShowAsync(AnsiConsole.Console, cancellationToken);
             var choice = choices.First(c => c.Display == selected);
 
             switch (choice.Type)
             {
                 case ChoiceType.Drive:
-                    currentDir = SelectDrive();
+                    currentDir = await SelectDriveAsync(cancellationToken);
                     break;
 
                 case ChoiceType.Parent:
@@ -256,16 +259,17 @@ public class FileBrowser
                     return choice.Path;
 
                 case ChoiceType.New:
-                    var newName = AnsiConsole.Prompt(
-                        new TextPrompt<string>("[green]New folder name:[/]")
-                            .Validate(name =>
-                            {
-                                if (string.IsNullOrWhiteSpace(name))
-                                    return ValidationResult.Error("Name cannot be empty");
-                                if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
-                                    return ValidationResult.Error("Name contains invalid characters");
-                                return ValidationResult.Success();
-                            }));
+                    var namePrompt = new TextPrompt<string>("[green]New folder name:[/]")
+                        .Validate(name =>
+                        {
+                            if (string.IsNullOrWhiteSpace(name))
+                                return ValidationResult.Error("Name cannot be empty");
+                            if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                                return ValidationResult.Error("Name contains invalid characters");
+                            return ValidationResult.Success();
+                        });
+
+                    var newName = await namePrompt.ShowAsync(AnsiConsole.Console, cancellationToken);
 
                     var newPath = Path.Combine(currentDir, newName);
                     try
@@ -283,7 +287,12 @@ public class FileBrowser
         }
     }
 
-    private string SelectDrive()
+    /// <summary>
+    /// Show the browser and get the selected path (sync wrapper).
+    /// </summary>
+    public string Browse() => BrowseAsync().GetAwaiter().GetResult();
+
+    private async Task<string> SelectDriveAsync(CancellationToken cancellationToken)
     {
         var drives = Directory.GetLogicalDrives();
 
@@ -309,12 +318,13 @@ public class FileBrowser
             }
         }).ToList();
 
-        var selected = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[green]Select Drive[/]")
-                .PageSize(10)
-                .HighlightStyle(new Style(Color.Cyan1))
-                .AddChoices(driveInfos.Select(d => d.Display)));
+        var prompt = new SelectionPrompt<string>()
+            .Title("[green]Select Drive[/]")
+            .PageSize(10)
+            .HighlightStyle(new Style(Color.Cyan1))
+            .AddChoices(driveInfos.Select(d => d.Display));
+
+        var selected = await prompt.ShowAsync(AnsiConsole.Console, cancellationToken);
 
         var drive = driveInfos.First(d => d.Display == selected);
         return drive.Drive;
@@ -409,9 +419,13 @@ public class FileBrowser
 public static class Browse
 {
     /// <summary>
-    /// Browse for a folder.
+    /// Browse for a folder (async with cancellation support).
     /// </summary>
-    public static string ForFolder(string? title = null, string? startPath = null, bool allowNew = false)
+    public static async Task<string> ForFolderAsync(
+        string? title = null,
+        string? startPath = null,
+        bool allowNew = false,
+        CancellationToken cancellationToken = default)
     {
         var browser = new FileBrowser().SelectDirectory();
 
@@ -422,23 +436,39 @@ public static class Browse
         if (allowNew)
             browser.AllowNew();
 
-        return browser.Browse();
+        return await browser.BrowseAsync(cancellationToken);
     }
 
     /// <summary>
-    /// Browse for a file.
+    /// Browse for a folder (sync wrapper).
     /// </summary>
-    public static string ForFile(string? title = null, string? startPath = null, string pattern = "*")
+    public static string ForFolder(string? title = null, string? startPath = null, bool allowNew = false)
+        => ForFolderAsync(title, startPath, allowNew).GetAwaiter().GetResult();
+
+    /// <summary>
+    /// Browse for a file (async with cancellation support).
+    /// </summary>
+    public static async Task<string> ForFileAsync(
+        string? title = null,
+        string? pattern = null,
+        string? startPath = null,
+        CancellationToken cancellationToken = default)
     {
         var browser = new FileBrowser()
             .SelectFile()
-            .WithPattern(pattern);
+            .WithPattern(pattern ?? "*");
 
         if (title != null)
             browser.WithTitle(title);
         if (startPath != null)
             browser.StartingFrom(startPath);
 
-        return browser.Browse();
+        return await browser.BrowseAsync(cancellationToken);
     }
+
+    /// <summary>
+    /// Browse for a file (sync wrapper).
+    /// </summary>
+    public static string ForFile(string? title = null, string? pattern = null, string? startPath = null)
+        => ForFileAsync(title, pattern, startPath).GetAwaiter().GetResult();
 }

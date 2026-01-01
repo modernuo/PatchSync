@@ -209,9 +209,7 @@ public static class WizardPrompt
 
         if (navResult.Contains("Browse"))
         {
-            // FileBrowser also needs cancellation support - for now use sync version
-            // TODO: Make FileBrowser async-aware
-            var path = await Task.Run(() => Browse.ForFolder(title, startPath, allowNew), InteractiveCancellation.Instance.Token);
+            var path = await Browse.ForFolderAsync(title, startPath, allowNew, InteractiveCancellation.Instance.Token);
             return WizardResult<string>.Success(path);
         }
         else
@@ -252,9 +250,7 @@ public static class WizardPrompt
 
         if (navResult.Contains("Browse"))
         {
-            // FileBrowser also needs cancellation support - for now use sync version
-            // TODO: Make FileBrowser async-aware
-            var path = await Task.Run(() => Browse.ForFile(title, pattern, startPath), InteractiveCancellation.Instance.Token);
+            var path = await Browse.ForFileAsync(title, pattern, startPath, InteractiveCancellation.Instance.Token);
             return WizardResult<string>.Success(path);
         }
         else

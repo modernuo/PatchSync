@@ -1,5 +1,6 @@
 #if FONT_PREVIEW
 using Figgle;
+using PatchSync.CLI.Wizard;
 using Spectre.Console;
 
 namespace PatchSync.CLI.Commands;
@@ -417,17 +418,27 @@ public static class FontPreviewCommand
         return Task.FromResult(0);
     }
 
-    public static Task<int> RunWizardAsync()
+    public static async Task<int> RunWizardAsync()
     {
-        var text = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Text to preview[/] [grey](Enter for PatchSync)[/]:")
-                .AllowEmpty());
+        var prompt = new TextPrompt<string>("[green]Text to preview[/] [grey](Enter for PatchSync)[/]:")
+            .AllowEmpty();
+
+        string text;
+        try
+        {
+            text = await prompt.ShowAsync(AnsiConsole.Console, InteractiveCancellation.Instance.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            InteractiveCancellation.Instance.Reset();
+            return 0;
+        }
 
         if (string.IsNullOrWhiteSpace(text))
             text = "PatchSync";
 
         RunInteractivePreview(text);
-        return Task.FromResult(0);
+        return 0;
     }
 
     private static void RunInteractivePreview(string text)

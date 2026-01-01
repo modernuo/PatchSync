@@ -66,12 +66,18 @@ public static class PublishCommand
             return 1;
         }
 
-        var channelId = channels.Count == 1
-            ? channels[0]
-            : AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[green]Select channel to publish:[/]")
-                    .AddChoices(channels));
+        string channelId;
+        if (channels.Count == 1)
+        {
+            channelId = channels[0];
+        }
+        else
+        {
+            var channelPrompt = new SelectionPrompt<string>()
+                .Title("[green]Select channel to publish:[/]")
+                .AddChoices(channels);
+            channelId = await channelPrompt.ShowAsync(AnsiConsole.Console, CancellationToken.None);
+        }
 
         // Get publishable versions (staged or failed)
         var versions = workspace.GetVersions(channelId).ToList();
@@ -94,13 +100,19 @@ public static class PublishCommand
         }
 
         // Select version
-        var selectedVersion = publishableVersions.Count == 1
-            ? publishableVersions[0].Version
-            : AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[green]Select version to publish:[/]")
-                    .AddChoices(publishableVersions.Select(v =>
-                        $"{v.Version} ({v.Metadata.Status}) - built {v.Metadata.Build.BuiltAt:g}")));
+        string selectedVersion;
+        if (publishableVersions.Count == 1)
+        {
+            selectedVersion = publishableVersions[0].Version;
+        }
+        else
+        {
+            var versionPrompt = new SelectionPrompt<string>()
+                .Title("[green]Select version to publish:[/]")
+                .AddChoices(publishableVersions.Select(v =>
+                    $"{v.Version} ({v.Metadata.Status}) - built {v.Metadata.Build.BuiltAt:g}"));
+            selectedVersion = await versionPrompt.ShowAsync(AnsiConsole.Console, CancellationToken.None);
+        }
 
         // Extract version string if it has metadata attached
         if (selectedVersion.Contains(" ("))
@@ -579,18 +591,18 @@ public static class PublishCommand
 
             case "prompt":
                 AnsiConsole.MarkupLine("[yellow]Enter S3 credentials:[/]");
-                var accessKey = AnsiConsole.Prompt(
-                    new TextPrompt<string>("Access Key ID:")
-                        .Validate(k => !string.IsNullOrWhiteSpace(k)
-                            ? ValidationResult.Success()
-                            : ValidationResult.Error("Access key is required")));
+                var accessKeyPrompt = new TextPrompt<string>("Access Key ID:")
+                    .Validate(k => !string.IsNullOrWhiteSpace(k)
+                        ? ValidationResult.Success()
+                        : ValidationResult.Error("Access key is required"));
+                var accessKey = await accessKeyPrompt.ShowAsync(AnsiConsole.Console, CancellationToken.None);
 
-                var secretKey = AnsiConsole.Prompt(
-                    new TextPrompt<string>("Secret Access Key:")
-                        .Secret()
-                        .Validate(k => !string.IsNullOrWhiteSpace(k)
-                            ? ValidationResult.Success()
-                            : ValidationResult.Error("Secret key is required")));
+                var secretKeyPrompt = new TextPrompt<string>("Secret Access Key:")
+                    .Secret()
+                    .Validate(k => !string.IsNullOrWhiteSpace(k)
+                        ? ValidationResult.Success()
+                        : ValidationResult.Error("Secret key is required"));
+                var secretKey = await secretKeyPrompt.ShowAsync(AnsiConsole.Console, CancellationToken.None);
 
                 s3Config = new S3Config
                 {

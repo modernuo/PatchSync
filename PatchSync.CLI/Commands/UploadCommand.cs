@@ -1,6 +1,5 @@
 using System.IO.Compression;
 using PatchSync.CLI.Config;
-using PatchSync.CLI.Prompts;
 using PatchSync.CLI.Storage;
 using PatchSync.CLI.Wizard;
 using PatchSync.CLI.Wizard.Steps;
@@ -210,10 +209,11 @@ public static class UploadCommand
             choices.Insert(1, "Save with DPAPI encryption");
         }
 
-        var saveChoice = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[grey]Save credentials for future uploads?[/]")
-                .AddChoices(choices));
+        var savePrompt = new SelectionPrompt<string>()
+            .Title("[grey]Save credentials for future uploads?[/]")
+            .AddChoices(choices);
+
+        var saveChoice = await savePrompt.ShowAsync(AnsiConsole.Console, CancellationToken.None);
 
         if (saveChoice.Contains("DPAPI") && OperatingSystem.IsWindows())
         {
