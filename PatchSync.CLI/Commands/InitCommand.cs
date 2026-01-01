@@ -132,8 +132,7 @@ public static class InitCommand
             var overwrite = WizardPrompt.Confirm(
                 "Overwrite existing workspace?",
                 wizard.Theme,
-                defaultValue: false,
-                allowBack: false);
+                defaultValue: false);
 
             if (!overwrite.IsSuccess || !overwrite.Value)
             {

@@ -373,14 +373,27 @@ public static class PublishCommand
             await workspace.SaveChannelStateAsync(channelId, channelState);
 
             AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine("[green]Publish complete![/]");
-            AnsiConsole.MarkupLine($"  Version: {version}");
-            AnsiConsole.MarkupLine($"  Files: {filesToUpload.Count}");
-            AnsiConsole.MarkupLine($"  Size: {FormatBytes(totalSize)}");
+            AnsiConsole.MarkupLine("[green]:check_mark_button: Publish complete![/]");
+            AnsiConsole.WriteLine();
+
+            var summaryTable = new Table()
+                .Border(TableBorder.Rounded)
+                .AddColumn("Property")
+                .AddColumn("Value");
+
+            summaryTable.AddRow("Version", version);
+            summaryTable.AddRow("Channel", $"{channelConfig.DisplayName} ({channelId})");
+            summaryTable.AddRow("Status", "[green]Live[/]");
+            summaryTable.AddRow("Files", filesToUpload.Count.ToString());
+            summaryTable.AddRow("Size", FormatBytes(totalSize));
             if (!string.IsNullOrEmpty(versionMetadata.Publish.ManifestUrl))
             {
-                AnsiConsole.MarkupLine($"  Manifest: {versionMetadata.Publish.ManifestUrl}");
+                summaryTable.AddRow("Manifest URL", versionMetadata.Publish.ManifestUrl);
             }
+
+            AnsiConsole.Write(summaryTable);
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine("[grey]Users will now receive this version.[/]");
 
             return 0;
         }

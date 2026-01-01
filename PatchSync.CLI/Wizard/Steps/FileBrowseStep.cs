@@ -28,13 +28,7 @@ public sealed class FileBrowseStep : IWizardStep
 
     public Task<WizardResult<object?>> ExecuteAsync(WizardContext context, IWizardTheme theme)
     {
-        var result = WizardPrompt.BrowseFile(
-            _prompt,
-            theme,
-            _startPath,
-            _pattern,
-            allowBack: !context.IsFirstStep);
-
+        var result = WizardPrompt.BrowseFile(_prompt, theme, _startPath, _pattern);
         return Task.FromResult(result.ToObjectResult());
     }
 }

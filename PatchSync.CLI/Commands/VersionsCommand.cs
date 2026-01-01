@@ -309,7 +309,9 @@ public static class VersionsCommand
             }
         }
 
-        AnsiConsole.MarkupLine($"[green]Cleaned up {toDelete.Count} versions.[/]");
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("[green]:check_mark_button: Cleanup complete![/]");
+        AnsiConsole.MarkupLine($"[grey]Removed {toDelete.Count} old versions.[/]");
         return 0;
     }
 
@@ -452,7 +454,22 @@ public static class VersionsCommand
         targetMetadata.Status = VersionStatus.Live;
         await workspace.SaveVersionMetadataAsync(channelId, targetVersion, targetMetadata);
 
-        AnsiConsole.MarkupLine($"[green]Rolled back to {targetVersion}[/]");
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("[green]:check_mark_button: Rollback complete![/]");
+        AnsiConsole.WriteLine();
+
+        var summaryTable = new Table()
+            .Border(TableBorder.Rounded)
+            .AddColumn("Property")
+            .AddColumn("Value");
+
+        summaryTable.AddRow("Channel", channelId);
+        summaryTable.AddRow("Version", targetVersion);
+        summaryTable.AddRow("Status", "[green]Live[/]");
+
+        AnsiConsole.Write(summaryTable);
+        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine("[grey]Users will now receive this version.[/]");
 
         // Purge CDN cache if configured
         if (profile.Cdn?.AutoPurge == true && !string.IsNullOrEmpty(profile.Cdn.ZoneId))

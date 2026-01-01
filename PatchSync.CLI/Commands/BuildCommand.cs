@@ -2,6 +2,9 @@ using System.Diagnostics;
 using System.Text.Json;
 using PatchSync.CLI.Build;
 using PatchSync.CLI.Prompts;
+using PatchSync.CLI.Wizard;
+using PatchSync.CLI.Wizard.Steps;
+using PatchSync.CLI.Wizard.Themes;
 using PatchSync.CLI.Workspace;
 using PatchSync.Common.Chunking;
 using PatchSync.Common.Manifest;
@@ -79,210 +82,229 @@ public static class BuildCommand
 
     public static async Task<int> RunWizardAsync()
     {
-        AnsiConsole.MarkupLine("[grey]Generate signatures and manifest for a directory[/]\n");
-
-        // Check for workspace
+        // Check for workspace - automatically detect mode
         var manager = WorkspaceManager.FindWorkspace(Directory.GetCurrentDirectory());
         if (manager != null && manager.Exists)
         {
-            AnsiConsole.MarkupLine($"[blue]Workspace found:[/] {manager.WorkspacePath}");
-            var useWorkspace = await AnsiConsole.ConfirmAsync("Use workspace mode?", defaultValue: true);
-
-            if (useWorkspace)
-            {
-                return await RunWorkspaceWizardAsync(manager);
-            }
+            return await RunWorkspaceWizardAsync(manager);
         }
 
-        // Standalone mode wizard
+        // No workspace - standalone mode
         return await RunStandaloneWizardAsync();
     }
 
     private static async Task<int> RunWorkspaceWizardAsync(WorkspaceManager manager)
     {
         var config = await manager.LoadConfigAsync();
-
-        // Channel selection
         var channelChoices = config.Channels.Keys.ToList();
-        var channel = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[green]Select channel:[/]")
-                .AddChoices(channelChoices));
 
-        var channelConfig = config.Channels[channel];
-        AnsiConsole.MarkupLine($"[blue]Channel:[/] {channelConfig.DisplayName} ({channel})");
+        // Store workspace context for validation
+        WorkspaceManager? ctxManager = manager;
+        WorkspaceConfig? ctxConfig = config;
+        string? currentChannel = null;
 
-        // Version pattern hint
-        if (!string.IsNullOrEmpty(channelConfig.VersionPattern))
-        {
-            AnsiConsole.MarkupLine($"[grey]Version pattern:[/] {channelConfig.VersionPattern}");
-        }
-
-        // Version input
-        var version = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Version[/]:")
-                .Validate(v =>
+        var wizard = new WizardRunner("Build Version", new BoxTheme())
+            .AddStep(new SelectionStep(
+                key: "channel",
+                displayName: "Channel",
+                prompt: "Select release channel",
+                channelChoices))
+            .AddStep(new CustomStep(
+                key: "version",
+                displayName: "Version",
+                executor: (ctx, theme) =>
                 {
-                    if (string.IsNullOrWhiteSpace(v))
-                        return ValidationResult.Error("Version is required");
-                    if (!manager.ValidateVersionPattern(channel, v))
-                        return ValidationResult.Error($"Version doesn't match pattern: {channelConfig.VersionPattern}");
-                    return ValidationResult.Success();
-                }));
+                    currentChannel = ctx.Get<string>("channel");
+                    var channelCfg = ctxConfig!.Channels[currentChannel];
 
-        // Check if version exists
-        if (manager.VersionExists(channel, version))
+                    // Show version pattern hint
+                    if (!string.IsNullOrEmpty(channelCfg.VersionPattern) && channelCfg.VersionPattern != ".*")
+                    {
+                        AnsiConsole.MarkupLine($"[grey]Pattern:[/] {channelCfg.VersionPattern}");
+                        AnsiConsole.WriteLine();
+                    }
+
+                    var result = WizardPrompt.Text(
+                        "Version",
+                        theme,
+                        defaultValue: null,
+                        allowEmpty: false,
+                        validator: v =>
+                        {
+                            if (string.IsNullOrWhiteSpace(v))
+                                return ValidationResult.Error("Version is required");
+                            if (!ctxManager!.ValidateVersionPattern(currentChannel, v))
+                                return ValidationResult.Error($"Doesn't match pattern: {channelCfg.VersionPattern}");
+                            return ValidationResult.Success();
+                        });
+
+                    return Task.FromResult(result.ToObjectResult());
+                }))
+            .AddStep(new CustomStep(
+                key: "overwrite",
+                displayName: "Confirm Overwrite",
+                executor: (ctx, theme) =>
+                {
+                    var channel = ctx.Get<string>("channel");
+                    var version = ctx.Get<string>("version");
+
+                    if (!ctxManager!.VersionExists(channel, version))
+                    {
+                        // Version doesn't exist, skip confirmation
+                        return Task.FromResult(WizardResult<object?>.Success(true));
+                    }
+
+                    AnsiConsole.MarkupLine($"[yellow]Version {version} already exists in {channel}.[/]");
+                    AnsiConsole.WriteLine();
+
+                    var result = WizardPrompt.Confirm(
+                        "Overwrite existing version?",
+                        theme,
+                        defaultValue: false);
+
+                    if (result.IsSuccess && !result.Value)
+                    {
+                        // User said no - cancel the wizard
+                        return Task.FromResult(WizardResult<object?>.Cancel);
+                    }
+
+                    return Task.FromResult(result.ToObjectResult());
+                },
+                skipCondition: ctx =>
+                {
+                    // We need to always evaluate this step to check version existence
+                    return false;
+                }))
+            .AddStep(new FolderBrowseStep(
+                key: "inputPath",
+                displayName: "Input Directory",
+                prompt: "Select input directory (containing files to package)",
+                startPathFactory: _ => config.Defaults?.InputPath))
+            .AddStep(new TextStep(
+                key: "notes",
+                displayName: "Release Notes",
+                prompt: "Release notes (optional)",
+                allowEmpty: true))
+            .AddStep(new TextStep(
+                key: "tags",
+                displayName: "Tags",
+                prompt: "Tags (comma-separated, optional)",
+                allowEmpty: true));
+
+        if (!await wizard.RunAsync())
         {
-            if (!await AnsiConsole.ConfirmAsync($"[yellow]Version {version} already exists. Overwrite?[/]", defaultValue: false))
-            {
-                AnsiConsole.MarkupLine("[grey]Cancelled.[/]");
-                return 0;
-            }
+            return 0; // User cancelled
         }
 
-        // Input path
-        string inputPath;
-        if (!string.IsNullOrEmpty(config.Defaults?.InputPath))
-        {
-            AnsiConsole.MarkupLine($"[grey]Default input path:[/] {config.Defaults.InputPath}");
-            if (await AnsiConsole.ConfirmAsync("Use default input path?", defaultValue: true))
-            {
-                inputPath = config.Defaults.InputPath;
-            }
-            else
-            {
-                inputPath = await PromptForInputPathAsync();
-            }
-        }
-        else
-        {
-            inputPath = await PromptForInputPathAsync();
-        }
-
-        AnsiConsole.MarkupLine($"[blue]Input:[/] {inputPath}");
-
-        // Notes
-        var notes = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Release notes[/] (optional):")
-                .AllowEmpty());
-
-        // Tags
-        var tagsInput = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Tags[/] (comma-separated, optional):")
-                .AllowEmpty());
-        var tags = string.IsNullOrWhiteSpace(tagsInput) ? null : tagsInput;
-
-        AnsiConsole.WriteLine();
+        // Extract values
+        var ctx = wizard.Context;
+        var channel = ctx.Get<string>("channel");
+        var version = ctx.Get<string>("version");
+        var inputPath = ctx.Get<string>("inputPath");
+        var notes = ctx.GetOrDefault<string>("notes");
+        var tags = ctx.GetOrDefault<string>("tags");
 
         return await ExecuteWorkspaceModeAsync(
             channel, version, inputPath, notes, tags,
-            force: false, dryRun: false,
+            force: true, // Already confirmed overwrite in wizard
+            dryRun: false,
             algorithmOverride: null, minChunkOverride: 0, avgChunkOverride: 0, maxChunkOverride: 0,
             existingManager: manager);
     }
 
-    private static async Task<string> PromptForInputPathAsync()
-    {
-        var useBrowser = await AnsiConsole.ConfirmAsync("Browse for input directory?");
-        if (useBrowser)
-        {
-            return Browse.ForFolder("[green]Select input directory[/] (containing game files)");
-        }
-        return AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Input directory path:[/]")
-                .Validate(path =>
-                {
-                    if (!Directory.Exists(path))
-                        return ValidationResult.Error($"Directory not found: {path}");
-                    return ValidationResult.Success();
-                }));
-    }
-
     private static async Task<int> RunStandaloneWizardAsync()
     {
-        // Input directory
-        var useBrowser = await AnsiConsole.ConfirmAsync("Browse for input directory?");
-        string inputPath;
-        if (useBrowser)
-        {
-            inputPath = Browse.ForFolder("[green]Select input directory[/] (containing game files)");
-        }
-        else
-        {
-            inputPath = AnsiConsole.Prompt(
-                new TextPrompt<string>("[green]Input directory path:[/]")
-                    .Validate(path =>
-                    {
-                        if (!Directory.Exists(path))
-                            return ValidationResult.Error($"Directory not found: {path}");
-                        return ValidationResult.Success();
-                    }));
-        }
-        AnsiConsole.MarkupLine($"[blue]Input:[/] {inputPath}\n");
-
-        // Output directory
-        useBrowser = await AnsiConsole.ConfirmAsync("Browse for output directory?");
-        string outputPath;
-        if (useBrowser)
-        {
-            outputPath = Browse.ForFolder("[green]Select output directory[/]", allowNew: true);
-        }
-        else
-        {
-            outputPath = AnsiConsole.Prompt(
-                new TextPrompt<string>("[green]Output directory path:[/]")
-                    .DefaultValue("./output"));
-        }
-        AnsiConsole.MarkupLine($"[blue]Output:[/] {outputPath}\n");
-
-        // Version
-        var version = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Version[/] (e.g., 1.0.0):")
-                .Validate(v => !string.IsNullOrWhiteSpace(v)
-                    ? ValidationResult.Success()
-                    : ValidationResult.Error("Version is required")));
-
-        // Base URL
-        var baseUrl = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Base URL[/] (where files will be hosted, optional):")
-                .AllowEmpty()
-                .DefaultValue(""));
-
-        // Algorithm selection
         var registry = ChunkerRegistry.Default;
-        var algorithm = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[green]Chunking algorithm:[/]")
-                .AddChoices(registry.SupportedAlgorithms));
 
-        // Advanced options
-        var useAdvanced = await AnsiConsole.ConfirmAsync("Configure advanced chunking options?", false);
+        var wizard = new WizardRunner("Build Signatures", new BoxTheme())
+            .AddStep(new FolderBrowseStep(
+                key: "inputPath",
+                displayName: "Input Directory",
+                prompt: "Select input directory (containing files to package)"))
+            .AddStep(new FolderBrowseStep(
+                key: "outputPath",
+                displayName: "Output Directory",
+                prompt: "Select output directory for manifest and signatures",
+                allowNew: true))
+            .AddStep(new TextStep(
+                key: "version",
+                displayName: "Version",
+                prompt: "Version (e.g., 1.0.0)",
+                validator: v => string.IsNullOrWhiteSpace(v)
+                    ? ValidationResult.Error("Version is required")
+                    : ValidationResult.Success()))
+            .AddStep(new TextStep(
+                key: "baseUrl",
+                displayName: "Base URL",
+                prompt: "Base URL where files will be hosted (optional)",
+                allowEmpty: true))
+            .AddStep(new SelectionStep(
+                key: "algorithm",
+                displayName: "Algorithm",
+                prompt: "Select chunking algorithm",
+                registry.SupportedAlgorithms))
+            .AddStep(new ConfirmStep(
+                key: "configureAdvanced",
+                displayName: "Advanced Options",
+                question: "Configure advanced chunking options?",
+                defaultValue: false))
+            .AddStep(ConditionalStep.WhenTrue("configureAdvanced",
+                new TextStep(
+                    key: "minChunk",
+                    displayName: "Min Chunk Size",
+                    prompt: "Minimum chunk size (bytes)",
+                    defaultValue: "4096",
+                    validator: v => int.TryParse(v, out var n) && n > 0
+                        ? ValidationResult.Success()
+                        : ValidationResult.Error("Must be a positive integer"))))
+            .AddStep(ConditionalStep.WhenTrue("configureAdvanced",
+                new TextStep(
+                    key: "avgChunk",
+                    displayName: "Avg Chunk Size",
+                    prompt: "Average chunk size (bytes)",
+                    defaultValue: "16384",
+                    validator: v => int.TryParse(v, out var n) && n > 0
+                        ? ValidationResult.Success()
+                        : ValidationResult.Error("Must be a positive integer"))))
+            .AddStep(ConditionalStep.WhenTrue("configureAdvanced",
+                new TextStep(
+                    key: "maxChunk",
+                    displayName: "Max Chunk Size",
+                    prompt: "Maximum chunk size (bytes)",
+                    defaultValue: "65536",
+                    validator: v => int.TryParse(v, out var n) && n > 0
+                        ? ValidationResult.Success()
+                        : ValidationResult.Error("Must be a positive integer"))));
 
+        if (!await wizard.RunAsync())
+        {
+            return 0; // User cancelled
+        }
+
+        // Extract values
+        var ctx = wizard.Context;
+        var inputPath = ctx.Get<string>("inputPath");
+        var outputPath = ctx.Get<string>("outputPath");
+        var version = ctx.Get<string>("version");
+        var baseUrl = ctx.GetOrDefault<string>("baseUrl") ?? "";
+        var algorithm = ctx.Get<string>("algorithm");
+
+        // Parse advanced options
+        var configureAdvanced = ctx.GetOrDefault<bool>("configureAdvanced");
         int minChunk = 4096;
         int avgChunk = 16384;
         int maxChunk = 65536;
         long minDeltaSize = 64 * 1024;
 
-        if (useAdvanced)
+        if (configureAdvanced)
         {
-            minChunk = AnsiConsole.Prompt(
-                new TextPrompt<int>("[green]Minimum chunk size[/] (bytes):")
-                    .DefaultValue(4096));
-
-            avgChunk = AnsiConsole.Prompt(
-                new TextPrompt<int>("[green]Average chunk size[/] (bytes):")
-                    .DefaultValue(16384));
-
-            maxChunk = AnsiConsole.Prompt(
-                new TextPrompt<int>("[green]Maximum chunk size[/] (bytes):")
-                    .DefaultValue(65536));
-
-            minDeltaSize = AnsiConsole.Prompt(
-                new TextPrompt<long>("[green]Minimum delta size[/] (bytes):")
-                    .DefaultValue(65536L));
+            if (ctx.TryGet<string>("minChunk", out var minStr) && int.TryParse(minStr, out var min))
+                minChunk = min;
+            if (ctx.TryGet<string>("avgChunk", out var avgStr) && int.TryParse(avgStr, out var avg))
+                avgChunk = avg;
+            if (ctx.TryGet<string>("maxChunk", out var maxStr) && int.TryParse(maxStr, out var max))
+                maxChunk = max;
         }
-
-        AnsiConsole.WriteLine();
 
         return await ExecuteStandaloneModeAsync(
             inputPath, outputPath, version, baseUrl, null,

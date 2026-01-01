@@ -25,12 +25,7 @@ public sealed class ConfirmStep : IWizardStep
 
     public Task<WizardResult<object?>> ExecuteAsync(WizardContext context, IWizardTheme theme)
     {
-        var result = WizardPrompt.Confirm(
-            _question,
-            theme,
-            _defaultValue,
-            allowBack: !context.IsFirstStep);
-
+        var result = WizardPrompt.Confirm(_question, theme, _defaultValue);
         return Task.FromResult(result.ToObjectResult());
     }
 }

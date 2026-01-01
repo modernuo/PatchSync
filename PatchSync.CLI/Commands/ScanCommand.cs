@@ -1,4 +1,7 @@
 using PatchSync.CLI.Prompts;
+using PatchSync.CLI.Wizard;
+using PatchSync.CLI.Wizard.Steps;
+using PatchSync.CLI.Wizard.Themes;
 using PatchSync.Common.Manifest;
 using PatchSync.SDK.Client;
 using PatchSync.SDK.Storage;
@@ -38,46 +41,45 @@ public static class ScanCommand
 
     public static async Task<int> RunWizardAsync()
     {
-        AnsiConsole.MarkupLine("[grey]Scan local installation against manifest[/]\n");
-
-        // CDN URL
-        var url = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]CDN URL[/] (base URL hosting manifest):")
-                .Validate(u =>
+        var wizard = new WizardRunner("Scan Installation", new BoxTheme())
+            .AddStep(new TextStep(
+                key: "url",
+                displayName: "CDN URL",
+                prompt: "CDN URL (base URL hosting manifest)",
+                validator: u =>
                 {
+                    if (string.IsNullOrWhiteSpace(u))
+                        return ValidationResult.Error("URL is required");
                     if (!Uri.TryCreate(u, UriKind.Absolute, out _))
-                        return ValidationResult.Error("Invalid URL");
+                        return ValidationResult.Error("Invalid URL format");
                     return ValidationResult.Success();
-                }));
+                }))
+            .AddStep(new FolderBrowseStep(
+                key: "localPath",
+                displayName: "Installation Directory",
+                prompt: "Select installation directory to scan"))
+            .AddStep(new TextStep(
+                key: "manifestPath",
+                displayName: "Manifest File",
+                prompt: "Manifest file (relative to CDN URL)",
+                defaultValue: "manifest.json"))
+            .AddStep(new ConfirmStep(
+                key: "showDetails",
+                displayName: "Show Details",
+                question: "Show detailed file list?",
+                defaultValue: false));
 
-        // Local path - use file browser
-        var useBrowser = await AnsiConsole.ConfirmAsync("Browse for installation directory?");
-        string localPath;
-        if (useBrowser)
+        if (!await wizard.RunAsync())
         {
-            localPath = Browse.ForFolder("[green]Select installation directory to scan[/]");
+            return 0; // User cancelled
         }
-        else
-        {
-            localPath = AnsiConsole.Prompt(
-                new TextPrompt<string>("[green]Installation directory path:[/]")
-                    .Validate(path =>
-                    {
-                        if (!Directory.Exists(path))
-                            return ValidationResult.Error($"Directory not found: {path}");
-                        return ValidationResult.Success();
-                    }));
-        }
-        AnsiConsole.MarkupLine($"[blue]Local path:[/] {localPath}\n");
 
-        // Manifest path
-        var manifestPath = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Manifest file[/] (relative to CDN URL):")
-                .DefaultValue("manifest.json"));
-
-        var showDetails = await AnsiConsole.ConfirmAsync("Show file details?", false);
-
-        AnsiConsole.WriteLine();
+        // Extract values
+        var ctx = wizard.Context;
+        var url = ctx.Get<string>("url");
+        var localPath = ctx.Get<string>("localPath");
+        var manifestPath = ctx.Get<string>("manifestPath");
+        var showDetails = ctx.Get<bool>("showDetails");
 
         return await ExecuteAsync(url, localPath, manifestPath, showDetails);
     }

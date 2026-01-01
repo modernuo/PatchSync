@@ -44,14 +44,7 @@ public sealed class FolderBrowseStep : IWizardStep
     public Task<WizardResult<object?>> ExecuteAsync(WizardContext context, IWizardTheme theme)
     {
         var startPath = _startPathFactory?.Invoke(context) ?? _startPath;
-
-        var result = WizardPrompt.BrowseFolder(
-            _prompt,
-            theme,
-            startPath,
-            _allowNew,
-            allowBack: !context.IsFirstStep);
-
+        var result = WizardPrompt.BrowseFolder(_prompt, theme, startPath, _allowNew);
         return Task.FromResult(result.ToObjectResult());
     }
 }

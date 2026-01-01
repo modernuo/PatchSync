@@ -10,11 +10,6 @@ public sealed class DefaultTheme : IWizardTheme
 {
     public string Name => "Default";
 
-    public string BackMarker => ":left_arrow: Back";
-    public string CancelMarker => ":cross_mark: Cancel";
-    public string Separator => ""; // Empty - separators can't be disabled in Spectre.Console
-    public string NavigationHint => "[grey](type 'back' or 'cancel')[/]";
-
     public Style HighlightStyle => new(Color.Cyan1);
     public Style DimStyle => new(Color.Grey);
     public Style AccentStyle => new(Color.Blue);
@@ -22,16 +17,19 @@ public sealed class DefaultTheme : IWizardTheme
 
     public int PageSize => 12;
 
-    public void RenderHeader(string wizardTitle, int currentStep, int totalSteps, string stepName)
+    public void RenderHeader(string wizardTitle, int currentStep, int totalSteps, string stepName, string breadcrumb)
     {
         AnsiConsole.MarkupLine($"[blue]{Markup.Escape(wizardTitle)}[/]");
-        AnsiConsole.MarkupLine($"[grey]Step {currentStep + 1} of {totalSteps}: {Markup.Escape(stepName)}[/]");
-        AnsiConsole.WriteLine();
+        AnsiConsole.MarkupLine($"[grey]{Markup.Escape(breadcrumb)}[/]");
     }
 
-    public void RenderFooter(bool canGoBack)
+    public void RenderNavigationHint(bool isFirstStep)
     {
-        // No footer in default theme
+        var hint = isFirstStep
+            ? "[grey]Ctrl+C to cancel[/]"
+            : "[grey]Ctrl+C to go back[/]";
+        AnsiConsole.MarkupLine(hint);
+        AnsiConsole.WriteLine();
     }
 
     public void ClearFrame()

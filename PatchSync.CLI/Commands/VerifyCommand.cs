@@ -1,5 +1,8 @@
 using System.Security.Cryptography;
 using PatchSync.CLI.Prompts;
+using PatchSync.CLI.Wizard;
+using PatchSync.CLI.Wizard.Steps;
+using PatchSync.CLI.Wizard.Themes;
 using PatchSync.SDK.Client;
 using PatchSync.SDK.Storage;
 using Spectre.Console;
@@ -38,47 +41,45 @@ public static class VerifyCommand
 
     public static async Task<int> RunWizardAsync()
     {
-        AnsiConsole.MarkupLine("[grey]Verify local files against manifest[/]\n");
-
-        // CDN URL
-        var url = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]CDN URL[/] (base URL hosting manifest):")
-                .Validate(u =>
+        var wizard = new WizardRunner("Verify Installation", new BoxTheme())
+            .AddStep(new TextStep(
+                key: "url",
+                displayName: "CDN URL",
+                prompt: "CDN URL (base URL hosting manifest)",
+                validator: u =>
                 {
+                    if (string.IsNullOrWhiteSpace(u))
+                        return ValidationResult.Error("URL is required");
                     if (!Uri.TryCreate(u, UriKind.Absolute, out _))
-                        return ValidationResult.Error("Invalid URL");
+                        return ValidationResult.Error("Invalid URL format");
                     return ValidationResult.Success();
-                }));
+                }))
+            .AddStep(new FolderBrowseStep(
+                key: "localPath",
+                displayName: "Installation Directory",
+                prompt: "Select installation directory to verify"))
+            .AddStep(new TextStep(
+                key: "manifestPath",
+                displayName: "Manifest File",
+                prompt: "Manifest file (relative to CDN URL)",
+                defaultValue: "manifest.json"))
+            .AddStep(new ConfirmStep(
+                key: "fix",
+                displayName: "Auto-Fix",
+                question: "Automatically fix mismatched files?",
+                defaultValue: false));
 
-        // Local path - use file browser
-        var useBrowser = await AnsiConsole.ConfirmAsync("Browse for installation directory?");
-        string localPath;
-        if (useBrowser)
+        if (!await wizard.RunAsync())
         {
-            localPath = Browse.ForFolder("[green]Select installation directory to verify[/]");
+            return 0; // User cancelled
         }
-        else
-        {
-            localPath = AnsiConsole.Prompt(
-                new TextPrompt<string>("[green]Installation directory path:[/]")
-                    .Validate(path =>
-                    {
-                        if (!Directory.Exists(path))
-                            return ValidationResult.Error($"Directory not found: {path}");
-                        return ValidationResult.Success();
-                    }));
-        }
-        AnsiConsole.MarkupLine($"[blue]Local path:[/] {localPath}\n");
 
-        // Manifest path
-        var manifestPath = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Manifest file[/] (relative to CDN URL):")
-                .DefaultValue("manifest.json"));
-
-        // Fix option
-        var fix = await AnsiConsole.ConfirmAsync("Automatically fix mismatched files?", false);
-
-        AnsiConsole.WriteLine();
+        // Extract values
+        var ctx = wizard.Context;
+        var url = ctx.Get<string>("url");
+        var localPath = ctx.Get<string>("localPath");
+        var manifestPath = ctx.Get<string>("manifestPath");
+        var fix = ctx.Get<bool>("fix");
 
         return await ExecuteAsync(url, localPath, manifestPath, fix);
     }
@@ -205,7 +206,22 @@ public static class VerifyCommand
             // Summary
             if (missing.Count == 0 && mismatches.Count == 0)
             {
-                AnsiConsole.MarkupLine($"[green]All {manifest.Files.Count} files verified successfully![/]");
+                AnsiConsole.MarkupLine("[green]:check_mark_button: Verification complete![/]");
+                AnsiConsole.WriteLine();
+
+                var summaryTable = new Table()
+                    .Border(TableBorder.Rounded)
+                    .AddColumn("Property")
+                    .AddColumn("Value");
+
+                summaryTable.AddRow("Version", manifest.Version);
+                summaryTable.AddRow("Files Verified", manifest.Files.Count.ToString());
+                summaryTable.AddRow("Status", "[green]All files match[/]");
+
+                AnsiConsole.Write(summaryTable);
+                AnsiConsole.WriteLine();
+                AnsiConsole.MarkupLine("[grey]Installation is verified.[/]");
+
                 return 0;
             }
 
@@ -221,7 +237,9 @@ public static class VerifyCommand
 
                 await client.PatchAsync(localPath, manifest);
 
-                AnsiConsole.MarkupLine("[green]Files fixed![/]");
+                AnsiConsole.WriteLine();
+                AnsiConsole.MarkupLine("[green]:check_mark_button: Files fixed![/]");
+                AnsiConsole.MarkupLine("[grey]Installation has been repaired.[/]");
                 return 0;
             }
 

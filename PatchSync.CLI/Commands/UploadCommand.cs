@@ -2,6 +2,9 @@ using System.IO.Compression;
 using PatchSync.CLI.Config;
 using PatchSync.CLI.Prompts;
 using PatchSync.CLI.Storage;
+using PatchSync.CLI.Wizard;
+using PatchSync.CLI.Wizard.Steps;
+using PatchSync.CLI.Wizard.Themes;
 using Spectre.Console;
 
 namespace PatchSync.CLI.Commands;
@@ -62,145 +65,183 @@ public static class UploadCommand
 
     public static async Task<int> RunWizardAsync()
     {
-        AnsiConsole.MarkupLine("[grey]Upload build artifacts to S3-compatible storage[/]\n");
-
-        // Load existing config and credentials
+        // Load existing config and credentials for defaults
         var config = await PatchSyncConfig.LoadOrDefaultAsync();
         var storedCreds = CredentialManager.LoadCredentials();
         var hasStoredCreds = storedCreds != null &&
                              !string.IsNullOrEmpty(storedCreds.AccessKey) &&
                              !string.IsNullOrEmpty(storedCreds.SecretKey);
 
-        // Build directory - use file browser
-        var useBrowser = await AnsiConsole.ConfirmAsync("Browse for build directory?");
-        string buildDir;
-        if (useBrowser)
-        {
-            buildDir = Browse.ForFolder("[green]Select build directory[/] (containing manifest.json)");
-            // Validate it has manifest.json
-            while (!File.Exists(Path.Combine(buildDir, "manifest.json")))
-            {
-                AnsiConsole.MarkupLine("[red]No manifest.json found in selected directory[/]");
-                buildDir = Browse.ForFolder("[green]Select build directory[/] (containing manifest.json)");
-            }
-        }
-        else
-        {
-            buildDir = AnsiConsole.Prompt(
-                new TextPrompt<string>("[green]Build directory path:[/]")
-                    .DefaultValue("./output")
-                    .Validate(path =>
+        // Shared state for the wizard
+        S3Config? s3Config = null;
+
+        var wizard = new WizardRunner("Upload to S3", new BoxTheme())
+            .AddStep(new FolderBrowseStep(
+                key: "buildDir",
+                displayName: "Build Directory",
+                prompt: "Select build directory (containing manifest.json)"))
+            .AddStep(new CustomStep(
+                key: "validateBuildDir",
+                displayName: "Validate Build",
+                executor: (ctx, theme) =>
+                {
+                    var buildDir = ctx.Get<string>("buildDir");
+                    if (!File.Exists(Path.Combine(buildDir, "manifest.json")))
                     {
-                        if (!Directory.Exists(path))
-                            return ValidationResult.Error($"Directory not found: {path}");
-                        if (!File.Exists(Path.Combine(path, "manifest.json")))
-                            return ValidationResult.Error("No manifest.json found in directory");
-                        return ValidationResult.Success();
-                    }));
-        }
-        AnsiConsole.MarkupLine($"[blue]Build directory:[/] {buildDir}\n");
-
-        // S3 Configuration
-        S3Config s3Config;
-        if (hasStoredCreds)
-        {
-            var credSource = storedCreds!.Endpoint != null
-                ? $"[grey]{storedCreds.Endpoint}[/]"
-                : "[grey]stored credentials[/]";
-
-            var useExisting = await AnsiConsole.ConfirmAsync(
-                $"Use saved S3 credentials? ({credSource})");
-
-            if (useExisting)
-            {
-                // Merge stored credentials with config
-                s3Config = new S3Config
+                        AnsiConsole.MarkupLine("[red]No manifest.json found in selected directory.[/]");
+                        AnsiConsole.MarkupLine("[grey]Select a directory containing build output.[/]");
+                        AnsiConsole.WriteLine();
+                        return Task.FromResult(WizardResult<object?>.Back);
+                    }
+                    return Task.FromResult(WizardResult<object?>.Success(true));
+                }))
+            .AddStep(new CustomStep(
+                key: "credentialSource",
+                displayName: "Credentials",
+                executor: (ctx, theme) =>
                 {
-                    Endpoint = storedCreds.Endpoint ?? config.S3?.Endpoint,
-                    Bucket = storedCreds.Bucket ?? config.S3?.Bucket,
-                    Region = storedCreds.Region ?? config.S3?.Region ?? "us-east-1",
-                    AccessKey = storedCreds.AccessKey,
-                    SecretKey = storedCreds.SecretKey,
-                    Prefix = storedCreds.Prefix ?? config.S3?.Prefix,
-                    PublicUrl = storedCreds.PublicUrl ?? config.S3?.PublicUrl,
-                    PathStyle = config.S3?.PathStyle ?? true
-                };
-            }
-            else
-            {
-                s3Config = await PromptS3ConfigAsync();
-            }
-        }
-        else
+                    if (hasStoredCreds)
+                    {
+                        var credSource = storedCreds!.Endpoint != null
+                            ? Markup.Escape(storedCreds.Endpoint)
+                            : "stored credentials";
+
+                        AnsiConsole.MarkupLine($"[grey]Saved credentials found:[/] {credSource}");
+                        AnsiConsole.WriteLine();
+                    }
+
+                    var choices = new List<string>();
+                    if (hasStoredCreds)
+                        choices.Add("Use saved credentials");
+                    choices.Add("Enter new credentials");
+                    if (hasStoredCreds)
+                        choices.Add("Clear saved and enter new");
+
+                    var result = WizardPrompt.Selection(
+                        "Credential source",
+                        choices,
+                        theme);
+
+                    return Task.FromResult(result.ToObjectResult());
+                }))
+            .AddStep(new CustomStep(
+                key: "s3Config",
+                displayName: "S3 Configuration",
+                executor: async (ctx, theme) =>
+                {
+                    var credChoice = ctx.Get<string>("credentialSource");
+
+                    if (credChoice == "Use saved credentials")
+                    {
+                        s3Config = new S3Config
+                        {
+                            Endpoint = storedCreds!.Endpoint ?? config.S3?.Endpoint,
+                            Bucket = storedCreds.Bucket ?? config.S3?.Bucket,
+                            Region = storedCreds.Region ?? config.S3?.Region ?? "us-east-1",
+                            AccessKey = storedCreds.AccessKey,
+                            SecretKey = storedCreds.SecretKey,
+                            Prefix = storedCreds.Prefix ?? config.S3?.Prefix,
+                            PublicUrl = storedCreds.PublicUrl ?? config.S3?.PublicUrl,
+                            PathStyle = config.S3?.PathStyle ?? true
+                        };
+                    }
+                    else
+                    {
+                        s3Config = await PromptS3ConfigAsync();
+                    }
+
+                    return WizardResult<object?>.Success(s3Config);
+                }))
+            .AddStep(new TextStep(
+                key: "prefix",
+                displayName: "Upload Prefix",
+                prompt: "Upload prefix (e.g., game/v1.0.0/)",
+                defaultValueFactory: _ => s3Config?.Prefix ?? "",
+                allowEmpty: true))
+            .AddStep(new ConfirmStep(
+                key: "compress",
+                displayName: "Compress",
+                question: "Compress files for fallback downloads?",
+                defaultValue: true))
+            .AddStep(new ConfirmStep(
+                key: "skipRaw",
+                displayName: "Skip Raw Files",
+                question: "Skip uploading raw files? (use if hosting separately)",
+                defaultValue: false));
+
+        if (!await wizard.RunAsync())
         {
-            s3Config = await PromptS3ConfigAsync();
+            return 0; // User cancelled
         }
 
-        // Optional prefix
-        var prefix = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Upload prefix[/] (e.g., game/v1.0.0/):")
-                .AllowEmpty()
-                .DefaultValue(s3Config.Prefix ?? ""));
+        // Extract values
+        var ctx = wizard.Context;
+        var buildDir = ctx.Get<string>("buildDir");
+        var prefix = ctx.GetOrDefault<string>("prefix");
+        var compress = ctx.Get<bool>("compress");
+        var skipRaw = ctx.Get<bool>("skipRaw");
 
-        s3Config.Prefix = string.IsNullOrEmpty(prefix) ? null : prefix;
-
-        // Options
-        var compress = await AnsiConsole.ConfirmAsync("Compress files for fallback downloads?");
-        var skipRaw = await AnsiConsole.ConfirmAsync("Skip uploading raw files? (use if hosting separately)", false);
-
-        // Offer to save credentials (with warning)
-        if (!hasStoredCreds || !await AnsiConsole.ConfirmAsync("Keep using existing saved credentials?"))
+        // Update prefix from wizard
+        if (s3Config != null)
         {
-            var choices = new List<string>
+            s3Config.Prefix = string.IsNullOrEmpty(prefix) ? null : prefix;
+        }
+
+        // Offer to save credentials after wizard completes
+        if (s3Config != null && ctx.Get<string>("credentialSource") != "Use saved credentials")
+        {
+            await OfferCredentialSaveAsync(s3Config, config);
+        }
+
+        return await ExecuteAsync(buildDir, s3Config!, compress, skipRaw);
+    }
+
+    private static async Task OfferCredentialSaveAsync(S3Config s3Config, PatchSyncConfig config)
+    {
+        AnsiConsole.WriteLine();
+        var choices = new List<string>
+        {
+            "Don't save (enter each time)",
+            "Show environment variable names (for CI/CD)"
+        };
+
+        if (CredentialManager.IsSecureStorageAvailable)
+        {
+            choices.Insert(1, "Save with DPAPI encryption");
+        }
+
+        var saveChoice = AnsiConsole.Prompt(
+            new SelectionPrompt<string>()
+                .Title("[grey]Save credentials for future uploads?[/]")
+                .AddChoices(choices));
+
+        if (saveChoice.Contains("DPAPI") && OperatingSystem.IsWindows())
+        {
+            var credentials = new S3Credentials
             {
-                "Don't save (enter each time)",
-                "Show environment variable names (for CI/CD)"
+                Endpoint = s3Config.Endpoint,
+                Bucket = s3Config.Bucket,
+                Region = s3Config.Region,
+                AccessKey = s3Config.AccessKey,
+                SecretKey = s3Config.SecretKey,
+                Prefix = s3Config.Prefix,
+                PublicUrl = s3Config.PublicUrl
             };
-
-            // Only offer DPAPI storage on Windows
-            if (CredentialManager.IsSecureStorageAvailable)
-            {
-                choices.Insert(1, "Save with DPAPI encryption (read security warning first)");
-            }
-
-            var saveChoice = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[green]How would you like to handle credentials for future uploads?[/]")
-                    .AddChoices(choices));
-
-            if (saveChoice.Contains("DPAPI") && OperatingSystem.IsWindows())
-            {
-                var credentials = new S3Credentials
-                {
-                    Endpoint = s3Config.Endpoint,
-                    Bucket = s3Config.Bucket,
-                    Region = s3Config.Region,
-                    AccessKey = s3Config.AccessKey,
-                    SecretKey = s3Config.SecretKey,
-                    Prefix = s3Config.Prefix,
-                    PublicUrl = s3Config.PublicUrl
-                };
-                CredentialManager.SaveCredentials(credentials, showWarning: true);
-            }
-            else if (saveChoice.Contains("environment"))
-            {
-                AnsiConsole.WriteLine();
-                AnsiConsole.MarkupLine("[yellow]Set these environment variables for CI/CD:[/]");
-                AnsiConsole.MarkupLine($"  {CredentialManager.EnvironmentVariables.Endpoint}={s3Config.Endpoint}");
-                AnsiConsole.MarkupLine($"  {CredentialManager.EnvironmentVariables.Bucket}={s3Config.Bucket}");
-                AnsiConsole.MarkupLine($"  {CredentialManager.EnvironmentVariables.Region}={s3Config.Region}");
-                AnsiConsole.MarkupLine($"  {CredentialManager.EnvironmentVariables.AccessKey}={s3Config.AccessKey}");
-                AnsiConsole.MarkupLine($"  {CredentialManager.EnvironmentVariables.SecretKey}=<your-secret-key>");
-                if (!string.IsNullOrEmpty(s3Config.Prefix))
-                    AnsiConsole.MarkupLine($"  {CredentialManager.EnvironmentVariables.Prefix}={s3Config.Prefix}");
-                if (!string.IsNullOrEmpty(s3Config.PublicUrl))
-                    AnsiConsole.MarkupLine($"  {CredentialManager.EnvironmentVariables.PublicUrl}={s3Config.PublicUrl}");
-                AnsiConsole.WriteLine();
-            }
+            CredentialManager.SaveCredentials(credentials, showWarning: true);
+        }
+        else if (saveChoice.Contains("environment"))
+        {
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine("[yellow]Set these environment variables for CI/CD:[/]");
+            AnsiConsole.MarkupLine($"  {CredentialManager.EnvironmentVariables.Endpoint}={s3Config.Endpoint}");
+            AnsiConsole.MarkupLine($"  {CredentialManager.EnvironmentVariables.Bucket}={s3Config.Bucket}");
+            AnsiConsole.MarkupLine($"  {CredentialManager.EnvironmentVariables.AccessKey}=<your-access-key>");
+            AnsiConsole.MarkupLine($"  {CredentialManager.EnvironmentVariables.SecretKey}=<your-secret-key>");
+            AnsiConsole.WriteLine();
         }
 
-        // Save non-sensitive config (endpoint, bucket, region, etc. but NOT secret key)
-        if (await AnsiConsole.ConfirmAsync("Save non-sensitive S3 settings to config file?"))
+        // Offer to save non-sensitive config
+        if (AnsiConsole.Confirm("Save non-sensitive S3 settings to config file?", false))
         {
             config.S3 = new S3Config
             {
@@ -210,85 +251,116 @@ public static class UploadCommand
                 Prefix = s3Config.Prefix,
                 PublicUrl = s3Config.PublicUrl,
                 PathStyle = s3Config.PathStyle
-                // Note: AccessKey and SecretKey intentionally not saved here
             };
             await config.SaveAsync(PatchSyncConfig.GetDefaultConfigPath());
             AnsiConsole.MarkupLine($"[grey]Config saved to: {PatchSyncConfig.GetDefaultConfigPath()}[/]");
         }
-
-        AnsiConsole.WriteLine();
-
-        return await ExecuteAsync(buildDir, s3Config, compress, skipRaw);
     }
 
     private static async Task<S3Config> PromptS3ConfigAsync()
     {
-        var provider = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[green]Select S3 provider:[/]")
-                .AddChoices(
-                    "Amazon S3",
-                    "Cloudflare R2",
-                    "Backblaze B2",
-                    "DigitalOcean Spaces",
-                    "MinIO",
-                    "Other S3-compatible"));
-
-        var (defaultEndpoint, defaultRegion, pathStyle) = provider switch
+        var providers = new[]
         {
-            "Amazon S3" => ("https://s3.amazonaws.com", "us-east-1", false),
-            "Cloudflare R2" => ("https://<account-id>.r2.cloudflarestorage.com", "auto", true),
-            "Backblaze B2" => ("https://s3.us-west-002.backblazeb2.com", "us-west-002", true),
-            "DigitalOcean Spaces" => ("https://nyc3.digitaloceanspaces.com", "nyc3", true),
-            "MinIO" => ("http://localhost:9000", "us-east-1", true),
-            _ => ("https://s3.example.com", "us-east-1", true)
+            "Amazon S3",
+            "Cloudflare R2",
+            "Backblaze B2",
+            "DigitalOcean Spaces",
+            "MinIO",
+            "Other S3-compatible"
         };
 
-        var endpoint = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]S3 Endpoint URL:[/]")
-                .DefaultValue(defaultEndpoint)
-                .Validate(url =>
+        // Provider defaults
+        string defaultEndpoint = "https://s3.amazonaws.com";
+        string defaultRegion = "us-east-1";
+        bool pathStyle = false;
+
+        var wizard = new WizardRunner("S3 Configuration", new BoxTheme())
+            .AddStep(new SelectionStep(
+                key: "provider",
+                displayName: "Provider",
+                prompt: "Select S3 provider",
+                providers))
+            .AddStep(new CustomStep(
+                key: "endpoint",
+                displayName: "Endpoint",
+                executor: (ctx, theme) =>
                 {
-                    if (!Uri.TryCreate(url, UriKind.Absolute, out _))
-                        return ValidationResult.Error("Invalid URL");
-                    return ValidationResult.Success();
-                }));
+                    var provider = ctx.Get<string>("provider");
+                    (defaultEndpoint, defaultRegion, pathStyle) = provider switch
+                    {
+                        "Amazon S3" => ("https://s3.amazonaws.com", "us-east-1", false),
+                        "Cloudflare R2" => ("https://<account-id>.r2.cloudflarestorage.com", "auto", true),
+                        "Backblaze B2" => ("https://s3.us-west-002.backblazeb2.com", "us-west-002", true),
+                        "DigitalOcean Spaces" => ("https://nyc3.digitaloceanspaces.com", "nyc3", true),
+                        "MinIO" => ("http://localhost:9000", "us-east-1", true),
+                        _ => ("https://s3.example.com", "us-east-1", true)
+                    };
 
-        var bucket = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Bucket name:[/]")
-                .Validate(b => !string.IsNullOrWhiteSpace(b)
+                    var result = WizardPrompt.Text(
+                        "S3 Endpoint URL",
+                        theme,
+                        defaultValue: defaultEndpoint,
+                        allowEmpty: false,
+                        validator: url => Uri.TryCreate(url, UriKind.Absolute, out _)
+                            ? ValidationResult.Success()
+                            : ValidationResult.Error("Invalid URL"));
+
+                    return Task.FromResult(result.ToObjectResult());
+                }))
+            .AddStep(new TextStep(
+                key: "bucket",
+                displayName: "Bucket",
+                prompt: "Bucket name",
+                validator: b => !string.IsNullOrWhiteSpace(b)
                     ? ValidationResult.Success()
-                    : ValidationResult.Error("Bucket name is required")));
-
-        var region = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Region:[/]")
-                .DefaultValue(defaultRegion));
-
-        var accessKey = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Access Key ID:[/]")
-                .Validate(k => !string.IsNullOrWhiteSpace(k)
+                    : ValidationResult.Error("Bucket name is required")))
+            .AddStep(new TextStep(
+                key: "region",
+                displayName: "Region",
+                prompt: "Region",
+                defaultValueFactory: _ => defaultRegion))
+            .AddStep(new TextStep(
+                key: "accessKey",
+                displayName: "Access Key",
+                prompt: "Access Key ID",
+                validator: k => !string.IsNullOrWhiteSpace(k)
                     ? ValidationResult.Success()
-                    : ValidationResult.Error("Access key is required")));
+                    : ValidationResult.Error("Access key is required")))
+            .AddStep(new CustomStep(
+                key: "secretKey",
+                displayName: "Secret Key",
+                executor: (ctx, theme) =>
+                {
+                    var result = WizardPrompt.Secret(
+                        "Secret Access Key",
+                        theme,
+                        validator: k => !string.IsNullOrWhiteSpace(k)
+                            ? ValidationResult.Success()
+                            : ValidationResult.Error("Secret key is required"));
 
-        var secretKey = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Secret Access Key:[/]")
-                .Secret()
-                .Validate(k => !string.IsNullOrWhiteSpace(k)
-                    ? ValidationResult.Success()
-                    : ValidationResult.Error("Secret key is required")));
+                    return Task.FromResult(result.ToObjectResult());
+                }))
+            .AddStep(new TextStep(
+                key: "publicUrl",
+                displayName: "Public URL",
+                prompt: "Public CDN URL (for manifest base URL, optional)",
+                allowEmpty: true));
 
-        var publicUrl = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Public CDN URL[/] (for manifest base URL, optional):")
-                .AllowEmpty());
+        if (!await wizard.RunAsync())
+        {
+            // User cancelled - return empty config (will fail validation later)
+            return new S3Config();
+        }
 
+        var ctx = wizard.Context;
         return new S3Config
         {
-            Endpoint = endpoint,
-            Bucket = bucket,
-            Region = region,
-            AccessKey = accessKey,
-            SecretKey = secretKey,
-            PublicUrl = string.IsNullOrEmpty(publicUrl) ? null : publicUrl,
+            Endpoint = ctx.Get<string>("endpoint"),
+            Bucket = ctx.Get<string>("bucket"),
+            Region = ctx.Get<string>("region"),
+            AccessKey = ctx.Get<string>("accessKey"),
+            SecretKey = ctx.Get<string>("secretKey"),
+            PublicUrl = string.IsNullOrEmpty(ctx.GetOrDefault<string>("publicUrl")) ? null : ctx.Get<string>("publicUrl"),
             PathStyle = pathStyle
         };
     }
@@ -454,15 +526,29 @@ public static class UploadCommand
                 });
 
             AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine("[green]Upload complete![/]");
-            AnsiConsole.MarkupLine($"  Files uploaded: {uploadedFiles}");
-            AnsiConsole.MarkupLine($"  Total size: {FormatBytes(totalSize)}");
+            AnsiConsole.MarkupLine("[green]:check_mark_button: Upload complete![/]");
+            AnsiConsole.WriteLine();
+
+            var summaryTable = new Table()
+                .Border(TableBorder.Rounded)
+                .AddColumn("Property")
+                .AddColumn("Value");
+
+            summaryTable.AddRow("Endpoint", s3Config.Endpoint ?? "");
+            summaryTable.AddRow("Bucket", s3Config.Bucket ?? "");
+            summaryTable.AddRow("Files Uploaded", uploadedFiles.ToString());
+            summaryTable.AddRow("Total Size", FormatBytes(totalSize));
 
             if (!string.IsNullOrEmpty(s3Config.PublicUrl))
             {
-                var manifestUrl = $"{s3Config.PublicUrl.TrimEnd('/')}/{s3Config.Prefix?.Trim('/') ?? ""}/manifest.json".Replace("//", "/").TrimStart('/');
-                AnsiConsole.MarkupLine($"  Manifest URL: {s3Config.PublicUrl.TrimEnd('/')}/{manifestUrl}");
+                var manifestUrl = $"{s3Config.PublicUrl.TrimEnd('/')}/{s3Config.Prefix?.Trim('/') ?? ""}/manifest.json"
+                    .Replace("//manifest", "/manifest");
+                summaryTable.AddRow("Manifest URL", manifestUrl);
             }
+
+            AnsiConsole.Write(summaryTable);
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine("[grey]Files are now available for patching.[/]");
 
             return 0;
         }

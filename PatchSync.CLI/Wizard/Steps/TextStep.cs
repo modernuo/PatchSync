@@ -51,15 +51,7 @@ public sealed class TextStep : IWizardStep
     public Task<WizardResult<object?>> ExecuteAsync(WizardContext context, IWizardTheme theme)
     {
         var defaultVal = _defaultValueFactory?.Invoke(context) ?? _defaultValue;
-
-        var result = WizardPrompt.Text(
-            _prompt,
-            theme,
-            defaultVal,
-            _allowEmpty,
-            allowBack: !context.IsFirstStep,
-            _validator);
-
+        var result = WizardPrompt.Text(_prompt, theme, defaultVal, _allowEmpty, _validator);
         return Task.FromResult(result.ToObjectResult());
     }
 }

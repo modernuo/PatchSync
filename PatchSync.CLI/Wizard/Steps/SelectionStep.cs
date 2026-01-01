@@ -33,12 +33,7 @@ public sealed class SelectionStep : IWizardStep
     public Task<WizardResult<object?>> ExecuteAsync(WizardContext context, IWizardTheme theme)
     {
         var choices = _choicesFactory(context);
-        var result = WizardPrompt.Selection(
-            _prompt,
-            choices,
-            theme,
-            allowBack: !context.IsFirstStep);
-
+        var result = WizardPrompt.Selection(_prompt, choices, theme);
         return Task.FromResult(result.ToObjectResult());
     }
 }

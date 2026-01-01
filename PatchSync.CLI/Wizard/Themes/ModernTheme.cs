@@ -11,11 +11,6 @@ public sealed class ModernTheme : IWizardTheme
 {
     public string Name => "Modern";
 
-    public string BackMarker => "[← Back]";
-    public string CancelMarker => "[Cancel]";
-    public string Separator => "";
-    public string NavigationHint => "[grey]('back' / 'cancel')[/]";
-
     public Style HighlightStyle => new(Color.Cyan1);
     public Style DimStyle => new(Color.Grey);
     public Style AccentStyle => new(Color.Blue);
@@ -23,7 +18,7 @@ public sealed class ModernTheme : IWizardTheme
 
     public int PageSize => 10;
 
-    public void RenderHeader(string wizardTitle, int currentStep, int totalSteps, string stepName)
+    public void RenderHeader(string wizardTitle, int currentStep, int totalSteps, string stepName, string breadcrumb)
     {
         var width = Math.Min(Console.WindowWidth - 2, 70);
 
@@ -46,24 +41,19 @@ public sealed class ModernTheme : IWizardTheme
         bar.Append('░', empty);
         bar.Append("[/]");
 
-        AnsiConsole.MarkupLine($"  {bar} [grey]Step {currentStep + 1}/{totalSteps}:[/] [white]{Markup.Escape(stepName)}[/]");
+        AnsiConsole.MarkupLine($"  {bar} [grey]{Markup.Escape(breadcrumb)}[/]");
 
         // Bottom bar
         AnsiConsole.MarkupLine($"[grey]{new string('━', width)}[/]");
-        AnsiConsole.WriteLine();
     }
 
-    public void RenderFooter(bool canGoBack)
+    public void RenderNavigationHint(bool isFirstStep)
     {
+        var hint = isFirstStep
+            ? "  [grey]Ctrl+C to cancel[/]"
+            : "  [grey]Ctrl+C to go back[/]";
+        AnsiConsole.MarkupLine(hint);
         AnsiConsole.WriteLine();
-        if (canGoBack)
-        {
-            AnsiConsole.MarkupLine("  [grey][[← Back]]  [[Cancel]][/]");
-        }
-        else
-        {
-            AnsiConsole.MarkupLine("  [grey][[Cancel]][/]");
-        }
     }
 
     public void ClearFrame()

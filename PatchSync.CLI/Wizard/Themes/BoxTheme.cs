@@ -10,11 +10,6 @@ public sealed class BoxTheme : IWizardTheme
 {
     public string Name => "Box";
 
-    public string BackMarker => ":left_arrow: Back";
-    public string CancelMarker => ":cross_mark: Cancel";
-    public string Separator => ""; // Empty - separators can't be disabled in Spectre.Console
-    public string NavigationHint => "[grey](type 'back' or 'cancel')[/]";
-
     public Style HighlightStyle => new(Color.Cyan1);
     public Style DimStyle => new(Color.Grey);
     public Style AccentStyle => new(Color.Blue);
@@ -22,11 +17,10 @@ public sealed class BoxTheme : IWizardTheme
 
     public int PageSize => 10;
 
-    public void RenderHeader(string wizardTitle, int currentStep, int totalSteps, string stepName)
+    public void RenderHeader(string wizardTitle, int currentStep, int totalSteps, string stepName, string breadcrumb)
     {
         // Use Spectre.Console Panel for a clean, proper box
-        var stepText = $"[grey]Step {currentStep + 1} of {totalSteps}[/]";
-        var headerContent = $"[bold blue]{wizardTitle.ToUpperInvariant()}[/]  {stepText}\n[cyan]{Markup.Escape(stepName)}[/]";
+        var headerContent = $"[bold blue]{wizardTitle.ToUpperInvariant()}[/]\n[grey]{Markup.Escape(breadcrumb)}[/]";
 
         var panel = new Panel(headerContent)
             .Border(BoxBorder.Rounded)
@@ -34,12 +28,15 @@ public sealed class BoxTheme : IWizardTheme
             .Padding(1, 0);
 
         AnsiConsole.Write(panel);
-        AnsiConsole.WriteLine();
     }
 
-    public void RenderFooter(bool canGoBack)
+    public void RenderNavigationHint(bool isFirstStep)
     {
-        // Footer is not typically called - navigation is in the prompts themselves
+        var hint = isFirstStep
+            ? "[grey]Ctrl+C to cancel[/]"
+            : "[grey]Ctrl+C to go back[/]";
+        AnsiConsole.MarkupLine(hint);
+        AnsiConsole.WriteLine();
     }
 
     public void ClearFrame()

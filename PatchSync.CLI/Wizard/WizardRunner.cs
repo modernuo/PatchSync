@@ -60,12 +60,22 @@ public sealed class WizardRunner
                 continue;
             }
 
-            // Clear and render header
+            // Clear and render header with breadcrumb
             _theme.ClearFrame();
-            _theme.RenderHeader(_title, GetVisibleStepIndex(), _context.TotalSteps, step.DisplayName);
+            _theme.RenderHeader(_title, GetVisibleStepIndex() + 1, _context.TotalSteps, step.DisplayName, GetBreadcrumb());
+            _theme.RenderNavigationHint(_context.CurrentStep == 0);
 
-            // Execute step
-            var result = await step.ExecuteAsync(_context, _theme);
+            // Execute step - Ctrl+C throws OperationCanceledException
+            WizardResult<object?> result;
+            try
+            {
+                result = await step.ExecuteAsync(_context, _theme);
+            }
+            catch (OperationCanceledException)
+            {
+                // Treat Ctrl+C as "back" navigation
+                result = WizardResult<object?>.Back;
+            }
 
             switch (result.Outcome)
             {
@@ -92,6 +102,12 @@ public sealed class WizardRunner
                             _context.CurrentStep = prevIndex;
                         }
                     }
+                    else
+                    {
+                        // On first step, Ctrl+C cancels the wizard
+                        _theme.ShowCancelled();
+                        return false;
+                    }
                     break;
 
                 case WizardOutcome.Cancel:
@@ -101,6 +117,20 @@ public sealed class WizardRunner
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Build breadcrumb trail from completed steps.
+    /// </summary>
+    private string GetBreadcrumb()
+    {
+        var breadcrumbSteps = new List<string>();
+        for (int i = 0; i <= _context.CurrentStep && i < _steps.Count; i++)
+        {
+            if (!_steps[i].ShouldSkip(_context))
+                breadcrumbSteps.Add(_steps[i].DisplayName);
+        }
+        return string.Join(" > ", breadcrumbSteps);
     }
 
     /// <summary>

@@ -1,5 +1,8 @@
 using System.Text.Json;
 using PatchSync.CLI.Prompts;
+using PatchSync.CLI.Wizard;
+using PatchSync.CLI.Wizard.Steps;
+using PatchSync.CLI.Wizard.Themes;
 using PatchSync.Common.Manifest;
 using PatchSync.Common.Signatures;
 using Spectre.Console;
@@ -45,41 +48,41 @@ public static class InfoCommand
 
     public static async Task<int> RunWizardAsync()
     {
-        AnsiConsole.MarkupLine("[grey]Display information about manifest or signature files[/]\n");
-
-        // File type selection
-        var fileType = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[green]What would you like to inspect?[/]")
-                .AddChoices(
+        var wizard = new WizardRunner("File Info", new BoxTheme())
+            .AddStep(new SelectionStep(
+                key: "fileType",
+                displayName: "File Type",
+                prompt: "What would you like to inspect?",
+                new[]
+                {
                     "Manifest file (manifest.json)",
-                    "Signature file (*.sig)"));
+                    "Signature file (*.sig)"
+                }))
+            .AddStep(new CustomStep(
+                key: "filePath",
+                displayName: "File",
+                executor: (ctx, theme) =>
+                {
+                    var fileType = ctx.Get<string>("fileType");
+                    var pattern = fileType.Contains("Manifest") ? "*.json" : "*.sig";
 
-        // File path - use file browser
-        var useBrowser = await AnsiConsole.ConfirmAsync("Browse for file?");
-        string filePath;
-        if (useBrowser)
+                    var result = WizardPrompt.BrowseFile(
+                        "Select file to inspect",
+                        theme,
+                        startPath: null,
+                        pattern);
+
+                    return Task.FromResult(result.ToObjectResult());
+                }));
+
+        if (!await wizard.RunAsync())
         {
-            var pattern = fileType.Contains("Manifest") ? "*.json" : "*.sig";
-            var title = fileType.Contains("Manifest")
-                ? "[green]Select manifest file[/]"
-                : "[green]Select signature file[/]";
-            filePath = Browse.ForFile(title, pattern: pattern);
-        }
-        else
-        {
-            var defaultPath = fileType.Contains("Manifest") ? "manifest.json" : "*.sig";
-            filePath = AnsiConsole.Prompt(
-                new TextPrompt<string>($"[green]File path[/] (e.g., {defaultPath}):")
-                    .Validate(path =>
-                    {
-                        if (!File.Exists(path))
-                            return ValidationResult.Error($"File not found: {path}");
-                        return ValidationResult.Success();
-                    }));
+            return 0; // User cancelled
         }
 
-        AnsiConsole.MarkupLine($"[blue]File:[/] {filePath}\n");
+        // Extract values
+        var ctx = wizard.Context;
+        var filePath = ctx.Get<string>("filePath");
 
         var ext = Path.GetExtension(filePath).ToLowerInvariant();
         return ext switch

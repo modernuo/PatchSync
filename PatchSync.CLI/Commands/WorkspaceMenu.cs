@@ -1,3 +1,6 @@
+using PatchSync.CLI.Wizard;
+using PatchSync.CLI.Wizard.Steps;
+using PatchSync.CLI.Wizard.Themes;
 using PatchSync.CLI.Workspace;
 using Spectre.Console;
 
@@ -47,12 +50,28 @@ public static class WorkspaceMenu
                 ":cross_mark: Exit"
             };
 
-            var selection = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[yellow]What would you like to do?[/]")
-                    .PageSize(10)
-                    .HighlightStyle(new Style(Color.Green))
-                    .AddChoices(choices));
+            string selection;
+            try
+            {
+                selection = AnsiConsole.Prompt(
+                    new SelectionPrompt<string>()
+                        .Title("[yellow]What would you like to do?[/]")
+                        .PageSize(10)
+                        .HighlightStyle(new Style(Color.Green))
+                        .AddChoices(choices));
+            }
+            catch (OperationCanceledException)
+            {
+                // Ctrl+C pressed - check for double-press exit
+                if (CancellationTracker.Instance.IsDoublePress())
+                {
+                    AnsiConsole.MarkupLine("\n[grey]Exiting...[/]");
+                    return 0;
+                }
+                AnsiConsole.MarkupLine("\n[yellow]Press Ctrl+C again to exit[/]");
+                await Task.Delay(100); // Brief pause before redraw
+                continue;
+            }
 
             if (selection.Contains("Create new"))
             {
@@ -92,38 +111,46 @@ public static class WorkspaceMenu
     /// <summary>
     /// Browse for an existing workspace.
     /// </summary>
-    private static Task<WorkspaceManager?> BrowseForWorkspaceAsync()
+    private static async Task<WorkspaceManager?> BrowseForWorkspaceAsync()
     {
         AnsiConsole.Clear();
-        AnsiConsole.MarkupLine("[bold blue]:file_folder: OPEN WORKSPACE[/]\n");
 
-        var pathInput = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Workspace directory[/] [grey](Enter to browse)[/]:")
-                .AllowEmpty());
+        var wizard = new WizardRunner("Open Workspace", new BoxTheme())
+            .AddStep(new FolderBrowseStep(
+                key: "path",
+                displayName: "Workspace Directory",
+                prompt: "Select workspace directory"))
+            .AddStep(new CustomStep(
+                key: "validate",
+                displayName: "Validate",
+                executor: (ctx, theme) =>
+                {
+                    var path = ctx.Get<string>("path");
+                    var manager = WorkspaceManager.ForPath(path);
 
-        string path;
-        if (string.IsNullOrWhiteSpace(pathInput))
+                    if (!manager.Exists)
+                    {
+                        AnsiConsole.MarkupLine($"[red]No workspace found at:[/] {path}");
+                        AnsiConsole.MarkupLine("[grey]Select a directory containing patchsync.json[/]");
+                        AnsiConsole.WriteLine();
+                        return Task.FromResult(WizardResult<object?>.Back);
+                    }
+
+                    return Task.FromResult(WizardResult<object?>.Success(manager));
+                }));
+
+        if (!await wizard.RunAsync())
         {
-            path = Prompts.Browse.ForFolder("[green]Select workspace directory[/]");
-        }
-        else
-        {
-            path = Path.GetFullPath(pathInput);
+            return null; // User cancelled
         }
 
-        var manager = WorkspaceManager.ForPath(path);
-        if (!manager.Exists)
-        {
-            AnsiConsole.MarkupLine($"[red]No workspace found at:[/] {path}");
-            AnsiConsole.MarkupLine("[grey]Press any key to continue...[/]");
-            Console.ReadKey(true);
-            return Task.FromResult<WorkspaceManager?>(null);
-        }
+        var path = wizard.Context.Get<string>("path");
+        var workspace = WorkspaceManager.ForPath(path);
 
         // Change to workspace directory so commands can find it
-        Directory.SetCurrentDirectory(manager.WorkspacePath);
+        Directory.SetCurrentDirectory(workspace.WorkspacePath);
 
-        return Task.FromResult<WorkspaceManager?>(manager);
+        return workspace;
     }
 
     /// <summary>
@@ -174,12 +201,28 @@ public static class WorkspaceMenu
                 ":cross_mark: Exit"
             };
 
-            var selection = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[yellow]What would you like to do?[/]")
-                    .PageSize(12)
-                    .HighlightStyle(new Style(Color.Green))
-                    .AddChoices(choices.Where(c => !string.IsNullOrEmpty(c))));
+            string selection;
+            try
+            {
+                selection = AnsiConsole.Prompt(
+                    new SelectionPrompt<string>()
+                        .Title("[yellow]What would you like to do?[/]")
+                        .PageSize(12)
+                        .HighlightStyle(new Style(Color.Green))
+                        .AddChoices(choices.Where(c => !string.IsNullOrEmpty(c))));
+            }
+            catch (OperationCanceledException)
+            {
+                // Ctrl+C pressed - check for double-press exit
+                if (CancellationTracker.Instance.IsDoublePress())
+                {
+                    AnsiConsole.MarkupLine("\n[grey]Exiting...[/]");
+                    return 0;
+                }
+                AnsiConsole.MarkupLine("\n[yellow]Press Ctrl+C again to exit[/]");
+                await Task.Delay(100); // Brief pause before redraw
+                continue;
+            }
 
             var result = await HandleWorkspaceMenuSelectionAsync(selection, workspace, config);
 
@@ -317,66 +360,19 @@ public static class WorkspaceMenu
     {
         if (config == null)
         {
-            AnsiConsole.MarkupLine("[red]Cannot load workspace configuration.[/]");
+            AnsiConsole.MarkupLine("[red]Error:[/] Cannot load workspace configuration.");
             return;
         }
 
-        // Select channel
         var channels = config.Channels.Keys.ToList();
         if (channels.Count == 0)
         {
-            AnsiConsole.MarkupLine("[red]No channels configured in workspace.[/]");
+            AnsiConsole.MarkupLine("[red]Error:[/] No channels configured in workspace.");
             return;
         }
 
-        var channel = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[green]Select channel:[/]")
-                .AddChoices(channels));
-
-        // Get version
-        var channelConfig = config.Channels[channel];
-        var version = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Version:[/]")
-                .Validate(v =>
-                {
-                    if (string.IsNullOrWhiteSpace(v))
-                        return ValidationResult.Error("Version is required");
-                    return ValidationResult.Success();
-                }));
-
-        // Validate version pattern
-        if (!workspace.ValidateVersionPattern(channel, version))
-        {
-            AnsiConsole.MarkupLine($"[yellow]Warning:[/] Version '{version}' doesn't match channel pattern: {channelConfig.VersionPattern}");
-            if (!await AnsiConsole.ConfirmAsync("Continue anyway?", defaultValue: false))
-            {
-                return;
-            }
-        }
-
-        // Get input path
-        var defaultInput = config.Defaults?.InputPath ?? "";
-        var inputPrompt = string.IsNullOrEmpty(defaultInput)
-            ? "[green]Input directory:[/]"
-            : $"[green]Input directory[/] [[{defaultInput}]]:";
-
-        var inputPath = AnsiConsole.Prompt(
-            new TextPrompt<string>(inputPrompt)
-                .AllowEmpty());
-
-        if (string.IsNullOrWhiteSpace(inputPath))
-            inputPath = defaultInput;
-
-        if (string.IsNullOrWhiteSpace(inputPath) || !Directory.Exists(inputPath))
-        {
-            AnsiConsole.MarkupLine("[red]Invalid input directory.[/]");
-            return;
-        }
-
-        // Run build
-        var args = new[] { "-c", channel, "-v", version, "-i", inputPath };
-        await BuildCommand.RunAsync(args);
+        // Use the BuildCommand's wizard which is already converted
+        await BuildCommand.RunWizardAsync();
     }
 
     private static async Task ShowVersionsMenuAsync(WorkspaceManager workspace, WorkspaceConfig? config)
@@ -533,12 +529,28 @@ public static class WorkspaceMenu
                 ":cross_mark: Exit"
             };
 
-            var selection = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("[yellow]Select a tool:[/]")
-                    .PageSize(12)
-                    .HighlightStyle(new Style(Color.Green))
-                    .AddChoices(choices.Where(c => !string.IsNullOrEmpty(c))));
+            string selection;
+            try
+            {
+                selection = AnsiConsole.Prompt(
+                    new SelectionPrompt<string>()
+                        .Title("[yellow]Select a tool:[/]")
+                        .PageSize(12)
+                        .HighlightStyle(new Style(Color.Green))
+                        .AddChoices(choices.Where(c => !string.IsNullOrEmpty(c))));
+            }
+            catch (OperationCanceledException)
+            {
+                // Ctrl+C pressed - check for double-press exit
+                if (CancellationTracker.Instance.IsDoublePress())
+                {
+                    AnsiConsole.MarkupLine("\n[grey]Exiting...[/]");
+                    return 0;
+                }
+                AnsiConsole.MarkupLine("\n[yellow]Press Ctrl+C again to exit[/]");
+                await Task.Delay(100); // Brief pause before redraw
+                continue;
+            }
 
             if (selection.Contains("Build"))
             {

@@ -1,4 +1,7 @@
 using PatchSync.CLI.Prompts;
+using PatchSync.CLI.Wizard;
+using PatchSync.CLI.Wizard.Steps;
+using PatchSync.CLI.Wizard.Themes;
 using PatchSync.SDK.Client;
 using PatchSync.SDK.Storage;
 using Spectre.Console;
@@ -38,55 +41,72 @@ public static class PatchCommand
 
     public static async Task<int> RunWizardAsync()
     {
-        AnsiConsole.MarkupLine("[grey]Apply delta patches to update local files[/]\n");
-
-        // CDN URL
-        var url = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]CDN URL[/] (base URL hosting manifest and files):")
-                .Validate(u =>
+        var wizard = new WizardRunner("Patch Installation", new BoxTheme())
+            .AddStep(new TextStep(
+                key: "url",
+                displayName: "CDN URL",
+                prompt: "CDN URL (base URL hosting manifest and files)",
+                validator: u =>
                 {
+                    if (string.IsNullOrWhiteSpace(u))
+                        return ValidationResult.Error("URL is required");
                     if (!Uri.TryCreate(u, UriKind.Absolute, out _))
-                        return ValidationResult.Error("Invalid URL");
+                        return ValidationResult.Error("Invalid URL format");
                     return ValidationResult.Success();
-                }));
+                }))
+            .AddStep(new FolderBrowseStep(
+                key: "localPath",
+                displayName: "Installation Directory",
+                prompt: "Select installation directory",
+                allowNew: true))
+            .AddStep(new TextStep(
+                key: "manifestPath",
+                displayName: "Manifest File",
+                prompt: "Manifest file (relative to CDN URL)",
+                defaultValue: "manifest.json"))
+            .AddStep(new ConfirmStep(
+                key: "verify",
+                displayName: "Verify",
+                question: "Verify files after patching?",
+                defaultValue: true))
+            .AddStep(new ConfirmStep(
+                key: "configureAdvanced",
+                displayName: "Advanced Options",
+                question: "Configure advanced options?",
+                defaultValue: false))
+            .AddStep(ConditionalStep.WhenTrue("configureAdvanced",
+                new TextStep(
+                    key: "deltaThreshold",
+                    displayName: "Delta Threshold",
+                    prompt: "Delta threshold (0.0-1.0, lower = prefer delta)",
+                    defaultValue: "0.8",
+                    validator: v =>
+                    {
+                        if (!double.TryParse(v, out var d))
+                            return ValidationResult.Error("Must be a number");
+                        if (d is < 0.0 or > 1.0)
+                            return ValidationResult.Error("Must be between 0.0 and 1.0");
+                        return ValidationResult.Success();
+                    })));
 
-        // Local path - use file browser
-        var useBrowser = await AnsiConsole.ConfirmAsync("Browse for installation directory?");
-        string localPath;
-        if (useBrowser)
+        if (!await wizard.RunAsync())
         {
-            localPath = Browse.ForFolder("[green]Select installation directory[/]", allowNew: true);
+            return 0; // User cancelled
         }
-        else
-        {
-            localPath = AnsiConsole.Prompt(
-                new TextPrompt<string>("[green]Installation directory path:[/]")
-                    .DefaultValue("./game"));
-        }
-        AnsiConsole.MarkupLine($"[blue]Local path:[/] {localPath}\n");
 
-        // Manifest path
-        var manifestPath = AnsiConsole.Prompt(
-            new TextPrompt<string>("[green]Manifest file[/] (relative to CDN URL):")
-                .DefaultValue("manifest.json"));
-
-        // Options
-        var verify = await AnsiConsole.ConfirmAsync("Verify files after patching?");
-
-        var useAdvanced = await AnsiConsole.ConfirmAsync("Configure advanced options?", false);
+        // Extract values
+        var ctx = wizard.Context;
+        var url = ctx.Get<string>("url");
+        var localPath = ctx.Get<string>("localPath");
+        var manifestPath = ctx.Get<string>("manifestPath");
+        var verify = ctx.Get<bool>("verify");
 
         double deltaThreshold = 0.8;
-        if (useAdvanced)
+        if (ctx.TryGet<string>("deltaThreshold", out var thresholdStr) &&
+            double.TryParse(thresholdStr, out var threshold))
         {
-            deltaThreshold = AnsiConsole.Prompt(
-                new TextPrompt<double>("[green]Delta threshold[/] (0.0-1.0, lower = prefer delta):")
-                    .DefaultValue(0.8)
-                    .Validate(d => d is >= 0.0 and <= 1.0
-                        ? ValidationResult.Success()
-                        : ValidationResult.Error("Must be between 0.0 and 1.0")));
+            deltaThreshold = threshold;
         }
-
-        AnsiConsole.WriteLine();
 
         return await ExecuteAsync(url, localPath, manifestPath, deltaThreshold, verify);
     }
@@ -177,7 +197,23 @@ public static class PatchCommand
                 });
 
             AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine("[green]Patch complete![/]");
+            AnsiConsole.MarkupLine("[green]:check_mark_button: Patch complete![/]");
+            AnsiConsole.WriteLine();
+
+            var table = new Table()
+                .Border(TableBorder.Rounded)
+                .AddColumn("Property")
+                .AddColumn("Value");
+
+            table.AddRow("Version", manifest.Version);
+            table.AddRow("Files", manifest.Files.Count.ToString());
+            table.AddRow("Total Size", FormatBytes(manifest.Files.Sum(f => f.Size)));
+            table.AddRow("Verification", verify ? "[green]Enabled[/]" : "[grey]Disabled[/]");
+
+            AnsiConsole.Write(table);
+            AnsiConsole.WriteLine();
+            AnsiConsole.MarkupLine("[grey]Installation is up to date.[/]");
+
             return 0;
         }
         catch (HttpRequestException ex)

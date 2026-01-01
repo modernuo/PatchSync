@@ -14,37 +14,17 @@ public interface IWizardTheme
     /// <summary>
     /// Render the wizard header/frame before a step.
     /// </summary>
-    void RenderHeader(string wizardTitle, int currentStep, int totalSteps, string stepName);
+    void RenderHeader(string wizardTitle, int currentStep, int totalSteps, string stepName, string breadcrumb);
 
     /// <summary>
-    /// Render navigation hints/footer after prompts.
+    /// Render navigation hint (Ctrl+C to go back/cancel).
     /// </summary>
-    void RenderFooter(bool canGoBack);
+    void RenderNavigationHint(bool isFirstStep);
 
     /// <summary>
     /// Clear the frame between steps.
     /// </summary>
     void ClearFrame();
-
-    /// <summary>
-    /// Text shown for back navigation in selection prompts.
-    /// </summary>
-    string BackMarker { get; }
-
-    /// <summary>
-    /// Text shown for cancel in selection prompts.
-    /// </summary>
-    string CancelMarker { get; }
-
-    /// <summary>
-    /// Separator between navigation items and choices.
-    /// </summary>
-    string Separator { get; }
-
-    /// <summary>
-    /// Hint text appended to text prompts.
-    /// </summary>
-    string NavigationHint { get; }
 
     /// <summary>
     /// Style for highlighted/selected items.

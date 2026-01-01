@@ -31,14 +31,7 @@ public sealed class MultiSelectStep : IWizardStep
 
     public Task<WizardResult<object?>> ExecuteAsync(WizardContext context, IWizardTheme theme)
     {
-        var result = WizardPrompt.MultiSelect(
-            _prompt,
-            _choices,
-            theme,
-            _preselected,
-            allowBack: !context.IsFirstStep,
-            required: _required);
-
+        var result = WizardPrompt.MultiSelect(_prompt, _choices, theme, _preselected, _required);
         return Task.FromResult(result.ToObjectResult());
     }
 }
