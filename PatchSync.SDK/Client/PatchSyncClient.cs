@@ -64,10 +64,17 @@ public sealed class PatchSyncClient : IDisposable
     /// 3. Commit: Atomically swap temp files to final locations
     /// 4. Verify: Hash-verify all files, fallback to full download for failures
     /// </summary>
+    /// <param name="localPath">Local installation path.</param>
+    /// <param name="manifest">Target manifest to patch to.</param>
+    /// <param name="progress">Progress reporter.</param>
+    /// <param name="installationState">Optional installation state for UpdateIfNotModified support.
+    /// If provided, files using UpdateIfNotModified strategy will be skipped if locally modified.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     public async Task PatchAsync(
         string localPath,
         GameManifest manifest,
         IProgress<PatchProgress>? progress = null,
+        LocalInstallationState? installationState = null,
         CancellationToken cancellationToken = default)
     {
         // Adapter to convert PatchEngineProgress to PatchProgress
@@ -97,29 +104,141 @@ public sealed class PatchSyncClient : IDisposable
             })
             : null;
 
-        var result = await _engine.PatchAsync(localPath, manifest, engineProgress, cancellationToken);
+        // Filter manifest for UpdateIfNotModified - skip files that are locally modified
+        var filteredManifest = manifest;
+        if (installationState != null)
+        {
+            filteredManifest = FilterManifestForLocalModifications(localPath, manifest, installationState);
+        }
+
+        var result = await _engine.PatchAsync(localPath, filteredManifest, engineProgress, cancellationToken);
 
         if (!result.Success && result.FilesFailed > 0)
         {
             throw new InvalidOperationException(
                 $"Patch completed with {result.FilesFailed} verification failures. {result.Message}");
         }
+
+        // Update installation state with new hashes
+        if (installationState != null)
+        {
+            await UpdateInstallationStateAsync(localPath, filteredManifest, installationState, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Creates a filtered manifest that excludes UpdateIfNotModified files that have been locally modified.
+    /// </summary>
+    private GameManifest FilterManifestForLocalModifications(
+        string localPath,
+        GameManifest manifest,
+        LocalInstallationState state)
+    {
+        var filteredFiles = new List<ManifestFile>();
+
+        foreach (var file in manifest.Files)
+        {
+            if (file.Strategy == UpdateStrategy.UpdateIfNotModified)
+            {
+                // Check if file exists and has been modified
+                var localFilePath = Path.Combine(localPath, file.Path.Replace('/', Path.DirectorySeparatorChar));
+
+                if (File.Exists(localFilePath))
+                {
+                    // Get current hash
+                    using var stream = File.OpenRead(localFilePath);
+                    using var sha256 = SHA256.Create();
+                    var hash = sha256.ComputeHash(stream);
+                    var currentHash = Convert.ToHexString(hash).ToLowerInvariant();
+
+                    // Check against original hash (not manifest hash)
+                    if (state.IsFileModified(file.Path, currentHash))
+                    {
+                        // File is locally modified - skip it
+                        continue;
+                    }
+                }
+            }
+
+            filteredFiles.Add(file);
+        }
+
+        // Create a new manifest with filtered files
+        return new GameManifest
+        {
+            Version = manifest.Version,
+            BuildDate = manifest.BuildDate,
+            SupportedAlgorithms = manifest.SupportedAlgorithms,
+            PreferredAlgorithm = manifest.PreferredAlgorithm,
+            FallbackUrl = manifest.FallbackUrl,
+            BaseUrl = manifest.BaseUrl,
+            Files = filteredFiles,
+            Metadata = manifest.Metadata
+        };
+    }
+
+    /// <summary>
+    /// Updates installation state after a successful patch.
+    /// </summary>
+    private async Task UpdateInstallationStateAsync(
+        string localPath,
+        GameManifest manifest,
+        LocalInstallationState state,
+        CancellationToken cancellationToken)
+    {
+        // Record new hashes for all patched files
+        foreach (var file in manifest.Files)
+        {
+            if (file.Strategy == UpdateStrategy.Delete)
+            {
+                state.RemoveFile(file.Path);
+            }
+            else
+            {
+                // Record the manifest hash as the "original" hash
+                state.RecordFileHash(file.Path, file.Hash);
+            }
+        }
+
+        state.RecordUpdate(manifest.Version);
+
+        // Save state file
+        var stateFilePath = Path.Combine(localPath, LocalInstallationState.DefaultFileName);
+        await state.SaveAsync(stateFilePath, cancellationToken);
+    }
+
+    /// <summary>
+    /// Loads the installation state for a local installation.
+    /// </summary>
+    public static async Task<LocalInstallationState> LoadInstallationStateAsync(
+        string localPath,
+        CancellationToken cancellationToken = default)
+    {
+        var stateFilePath = Path.Combine(localPath, LocalInstallationState.DefaultFileName);
+        return await LocalInstallationState.LoadAsync(stateFilePath, cancellationToken);
     }
 
     /// <summary>
     /// Scans the local installation against the manifest to determine what needs updating.
     /// Does not download or modify any files.
     /// </summary>
+    /// <param name="localPath">Local installation path.</param>
+    /// <param name="manifest">Target manifest.</param>
+    /// <param name="progress">Progress reporter.</param>
+    /// <param name="installationState">Optional installation state for UpdateIfNotModified detection.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     public async Task<ScanResult> ScanAsync(
         string localPath,
         GameManifest manifest,
         IProgress<ScanProgress>? progress = null,
+        LocalInstallationState? installationState = null,
         CancellationToken cancellationToken = default)
     {
         var upToDate = new List<FileStatus>();
         var needsUpdate = new List<FileStatus>();
         var missing = new List<FileStatus>();
         var toDelete = new List<FileStatus>();
+        var locallyModified = new List<FileStatus>();
 
         var files = manifest.Files.ToList();
         var scanned = 0;
@@ -146,13 +265,24 @@ public sealed class PatchSyncClient : IDisposable
             else
             {
                 var localHash = await ComputeFileHashAsync(localFilePath, cancellationToken);
+
                 if (string.Equals(localHash, file.Hash, StringComparison.OrdinalIgnoreCase))
                 {
                     upToDate.Add(new FileStatus(file.Path, file.Size, FileStatusType.UpToDate, localHash, file.Hash, file.Strategy));
                 }
                 else
                 {
-                    needsUpdate.Add(new FileStatus(file.Path, file.Size, FileStatusType.NeedsUpdate, localHash, file.Hash, file.Strategy));
+                    // Check for UpdateIfNotModified - if file is locally modified from original, skip it
+                    if (file.Strategy == UpdateStrategy.UpdateIfNotModified &&
+                        installationState != null &&
+                        installationState.IsFileModified(file.Path, localHash))
+                    {
+                        locallyModified.Add(new FileStatus(file.Path, file.Size, FileStatusType.LocallyModified, localHash, file.Hash, file.Strategy));
+                    }
+                    else
+                    {
+                        needsUpdate.Add(new FileStatus(file.Path, file.Size, FileStatusType.NeedsUpdate, localHash, file.Hash, file.Strategy));
+                    }
                 }
             }
 
@@ -166,7 +296,8 @@ public sealed class PatchSyncClient : IDisposable
             UpToDate = upToDate,
             NeedsUpdate = needsUpdate,
             Missing = missing,
-            ToDelete = toDelete
+            ToDelete = toDelete,
+            LocallyModified = locallyModified
         };
     }
 
@@ -368,7 +499,9 @@ public enum FileStatusType
     /// <summary>File exists locally but not in manifest - orphaned.</summary>
     Orphaned,
     /// <summary>File should be deleted per manifest.</summary>
-    ToDelete
+    ToDelete,
+    /// <summary>File has been locally modified and will not be updated (UpdateIfNotModified strategy).</summary>
+    LocallyModified
 }
 
 /// <summary>
@@ -388,17 +521,20 @@ public sealed class ScanResult
     /// <summary>Files to delete.</summary>
     public IReadOnlyList<FileStatus> ToDelete { get; init; } = Array.Empty<FileStatus>();
 
+    /// <summary>Files that have been locally modified and will be skipped (UpdateIfNotModified strategy).</summary>
+    public IReadOnlyList<FileStatus> LocallyModified { get; init; } = Array.Empty<FileStatus>();
+
     /// <summary>
     /// Total worst-case bytes that need to be downloaded (if all files were downloaded fully).
     /// For actual delta-aware estimates, use <see cref="GetStrategyBreakdown"/>.
     /// </summary>
     public long BytesToDownload => NeedsUpdate.Sum(f => f.Size) + Missing.Sum(f => f.Size);
 
-    /// <summary>True if the installation is fully up to date.</summary>
+    /// <summary>True if the installation is fully up to date (excluding locally modified files which are intentionally skipped).</summary>
     public bool IsUpToDate => NeedsUpdate.Count == 0 && Missing.Count == 0 && ToDelete.Count == 0;
 
-    /// <summary>Total number of files in manifest.</summary>
-    public int TotalFiles => UpToDate.Count + NeedsUpdate.Count + Missing.Count;
+    /// <summary>Total number of files in manifest (excludes locally modified).</summary>
+    public int TotalFiles => UpToDate.Count + NeedsUpdate.Count + Missing.Count + LocallyModified.Count;
 
     /// <summary>
     /// Gets a breakdown of files by update strategy, with estimated download bytes.
