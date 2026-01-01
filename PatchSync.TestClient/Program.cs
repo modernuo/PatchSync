@@ -332,10 +332,11 @@ class Program
                     }
                 }
 
-                // Log file completions (contains timing info)
-                if (p.CurrentFile != null && p.CurrentFile.StartsWith("Completed:"))
+                // Log file completions and failures
+                if (p.CurrentFile != null && (p.CurrentFile.StartsWith("Completed:") || p.CurrentFile.StartsWith("FAILED:")))
                 {
-                    ClearProgressAndPrint($"  {p.CurrentFile}");
+                    var prefix = p.CurrentFile.StartsWith("FAILED:") ? "  [ERROR] " : "  ";
+                    ClearProgressAndPrint($"{prefix}{p.CurrentFile}");
                     return;
                 }
 

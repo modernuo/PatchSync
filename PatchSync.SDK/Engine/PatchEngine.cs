@@ -382,25 +382,33 @@ public sealed class PatchEngine : IDisposable
                     ReportProgress($"{fileName} ({p.Percentage:P0})", completedFiles);
                 });
 
+                bool success = false;
+                string? errorMessage = null;
                 try
                 {
                     await AssembleFileAsync(filePlan, fileProgress, ct);
                     results.Add(new AssemblyResult(filePlan, true, null, DateTime.UtcNow - fileStart));
+                    success = true;
                 }
                 catch (Exception ex)
                 {
+                    errorMessage = ex.Message;
                     results.Add(new AssemblyResult(filePlan, false, ex.Message, DateTime.UtcNow - fileStart));
                 }
 
                 var completed = Interlocked.Increment(ref completedFiles);
                 var elapsed = DateTime.UtcNow - fileStart;
 
+                var statusMessage = success
+                    ? $"Completed: {fileName} ({elapsed.TotalSeconds:F1}s)"
+                    : $"FAILED: {fileName} - {errorMessage}";
+
                 progress?.Report(new PatchEngineProgress(
                     PatchEnginePhase.Assembling,
                     completed, totalFiles,
                     Interlocked.Read(ref downloadedBytes) + Interlocked.Read(ref copiedBytes), totalBytes,
                     Interlocked.Read(ref downloadedBytes), Interlocked.Read(ref copiedBytes),
-                    $"Completed: {fileName} ({elapsed.TotalSeconds:F1}s)"));
+                    statusMessage));
             });
 
         // Final assembly progress report to ensure we show 100%
