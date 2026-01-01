@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using PatchSync.CLI.Cdn;
+using PatchSync.Common.Manifest;
 
 namespace PatchSync.CLI.Workspace;
 
@@ -25,6 +26,10 @@ namespace PatchSync.CLI.Workspace;
 [JsonSerializable(typeof(PublishInfo))]
 [JsonSerializable(typeof(UploadedFile))]
 [JsonSerializable(typeof(ComparisonInfo))]
+[JsonSerializable(typeof(BasedOnInfo))]
+[JsonSerializable(typeof(PromotedFromInfo))]
+[JsonSerializable(typeof(FileOverride))]
+[JsonSerializable(typeof(Dictionary<string, FileOverride>))]
 [JsonSerializable(typeof(ChannelState))]
 [JsonSerializable(typeof(CurrentVersionInfo))]
 [JsonSerializable(typeof(VersionHistoryEntry))]
@@ -47,7 +52,7 @@ namespace PatchSync.CLI.Workspace;
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     WriteIndented = true,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    Converters = [typeof(JsonStringEnumConverter<VersionStatus>)])]
+    Converters = [typeof(JsonStringEnumConverter<VersionStatus>), typeof(JsonStringEnumConverter<UpdateStrategy>)])]
 public partial class WorkspaceJsonContext : JsonSerializerContext
 {
     /// <summary>

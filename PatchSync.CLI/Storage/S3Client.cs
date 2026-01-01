@@ -550,6 +550,157 @@ public sealed class S3Client : IDisposable
             await EnsureSuccessAsync(response);
     }
 
+    /// <summary>
+    /// Tests connectivity and credentials by performing a HEAD request on the bucket.
+    /// Returns true if credentials are valid and bucket is accessible.
+    /// </summary>
+    public async Task<bool> TestConnectivityAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Try to list with empty prefix (limited to 1 result) to verify access
+            var query = "list-type=2&max-keys=1";
+            var uri = BuildUri($"?{query}");
+            var request = CreateSignedRequest(HttpMethod.Get, uri, null);
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Lists all buckets accessible with current credentials.
+    /// Note: May not work with all S3-compatible providers (e.g., R2 with bucket-scoped tokens).
+    /// </summary>
+    public async Task<List<string>> ListBucketsAsync(CancellationToken cancellationToken = default)
+    {
+        var results = new List<string>();
+
+        try
+        {
+            // ListBuckets is at the service root, not bucket-specific
+            var endpoint = _config.Endpoint!.TrimEnd('/');
+            var uri = new Uri($"{endpoint}/");
+            var request = CreateSignedRequest(HttpMethod.Get, uri, null);
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            await EnsureSuccessAsync(response);
+
+            var xml = await response.Content.ReadAsStringAsync(cancellationToken);
+            var doc = XDocument.Parse(xml);
+            var ns = doc.Root?.Name.Namespace ?? XNamespace.None;
+
+            foreach (var bucket in doc.Descendants(ns + "Bucket"))
+            {
+                var name = bucket.Element(ns + "Name")?.Value;
+                if (!string.IsNullOrEmpty(name))
+                    results.Add(name);
+            }
+        }
+        catch (HttpRequestException)
+        {
+            // Some providers don't support ListBuckets with bucket-scoped tokens
+            // Return empty list instead of throwing
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Lists "folders" (common prefixes) at a given path.
+    /// </summary>
+    public async Task<List<string>> ListPrefixesAsync(
+        string prefix,
+        CancellationToken cancellationToken = default)
+    {
+        prefix = NormalizePath(prefix);
+        if (!prefix.EndsWith('/') && !string.IsNullOrEmpty(prefix))
+            prefix += "/";
+
+        var results = new List<string>();
+        string? continuationToken = null;
+
+        do
+        {
+            var query = $"list-type=2&prefix={Uri.EscapeDataString(prefix)}&delimiter=/";
+            if (continuationToken != null)
+                query += $"&continuation-token={Uri.EscapeDataString(continuationToken)}";
+
+            var uri = BuildUri($"?{query}");
+            var request = CreateSignedRequest(HttpMethod.Get, uri, null);
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            await EnsureSuccessAsync(response);
+
+            var xml = await response.Content.ReadAsStringAsync(cancellationToken);
+            var doc = XDocument.Parse(xml);
+            var ns = doc.Root?.Name.Namespace ?? XNamespace.None;
+
+            // CommonPrefixes contains the "folders"
+            foreach (var commonPrefix in doc.Descendants(ns + "CommonPrefixes"))
+            {
+                var prefixValue = commonPrefix.Element(ns + "Prefix")?.Value;
+                if (!string.IsNullOrEmpty(prefixValue))
+                {
+                    // Remove trailing slash and get just the folder name
+                    var folderName = prefixValue.TrimEnd('/');
+                    if (folderName.Contains('/'))
+                        folderName = folderName[(folderName.LastIndexOf('/') + 1)..];
+                    results.Add(folderName);
+                }
+            }
+
+            var isTruncated = doc.Descendants(ns + "IsTruncated").FirstOrDefault()?.Value == "true";
+            continuationToken = isTruncated
+                ? doc.Descendants(ns + "NextContinuationToken").FirstOrDefault()?.Value
+                : null;
+
+        } while (continuationToken != null);
+
+        return results;
+    }
+
+    /// <summary>
+    /// Creates a bucket if it doesn't exist.
+    /// Note: May require additional permissions and may not work with all providers.
+    /// </summary>
+    public async Task<bool> CreateBucketAsync(string bucketName, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var endpoint = _config.Endpoint!.TrimEnd('/');
+            Uri uri;
+
+            if (_config.PathStyle)
+            {
+                uri = new Uri($"{endpoint}/{bucketName}");
+            }
+            else
+            {
+                var baseUri = new Uri(endpoint);
+                uri = new Uri($"{baseUri.Scheme}://{bucketName}.{baseUri.Host}/");
+            }
+
+            var request = CreateSignedRequest(HttpMethod.Put, uri, null);
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+
+            // 409 Conflict means bucket already exists (which is fine)
+            if (response.StatusCode == HttpStatusCode.Conflict)
+                return true;
+
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public void Dispose()
     {
         _httpClient.Dispose();

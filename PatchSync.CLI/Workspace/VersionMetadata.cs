@@ -1,3 +1,5 @@
+using PatchSync.Common.Manifest;
+
 namespace PatchSync.CLI.Workspace;
 
 /// <summary>
@@ -67,6 +69,24 @@ public sealed class VersionMetadata
 
     /// <summary>Optional tags for categorization</summary>
     public List<string>? Tags { get; set; }
+
+    /// <summary>
+    /// Information about the base version this build was compared against.
+    /// Null if this is a fresh build with no base version.
+    /// </summary>
+    public BasedOnInfo? BasedOn { get; set; }
+
+    /// <summary>
+    /// Information about where this version was promoted from.
+    /// Null if this version was built directly in this channel.
+    /// </summary>
+    public PromotedFromInfo? PromotedFrom { get; set; }
+
+    /// <summary>
+    /// Per-file strategy overrides applied to this version.
+    /// Key is relative file path, value is override configuration.
+    /// </summary>
+    public Dictionary<string, FileOverride>? FileOverrides { get; set; }
 }
 
 /// <summary>
@@ -223,4 +243,58 @@ public sealed class ComparisonInfo
 
     /// <summary>Estimated bytes a client would need to download for delta update</summary>
     public long EstimatedDeltaDownload { get; set; }
+}
+
+/// <summary>
+/// Information about the base version used for comparison during build.
+/// </summary>
+public sealed class BasedOnInfo
+{
+    /// <summary>Channel the base version came from</summary>
+    public required string Channel { get; set; }
+
+    /// <summary>Version string of the base version</summary>
+    public required string Version { get; set; }
+
+    /// <summary>Timestamp when the base version was built</summary>
+    public DateTime? BaseBuiltAt { get; set; }
+
+    /// <summary>Whether this is a cross-channel base (different channel than current)</summary>
+    public bool IsCrossChannel { get; set; }
+}
+
+/// <summary>
+/// Information about version promotion source.
+/// </summary>
+public sealed class PromotedFromInfo
+{
+    /// <summary>Original channel the version came from</summary>
+    public required string SourceChannel { get; set; }
+
+    /// <summary>Original version string (may differ from current if renamed)</summary>
+    public required string SourceVersion { get; set; }
+
+    /// <summary>When the promotion occurred</summary>
+    public DateTime PromotedAt { get; set; }
+
+    /// <summary>Who initiated the promotion (machine name or user)</summary>
+    public string? PromotedBy { get; set; }
+}
+
+/// <summary>
+/// Override configuration for a single file's update strategy.
+/// </summary>
+public sealed class FileOverride
+{
+    /// <summary>Manually selected strategy for this file</summary>
+    public required UpdateStrategy Strategy { get; set; }
+
+    /// <summary>When this override was set</summary>
+    public DateTime SetAt { get; set; }
+
+    /// <summary>Optional reason for the override</summary>
+    public string? Reason { get; set; }
+
+    /// <summary>Whether signatures need regeneration due to strategy change</summary>
+    public bool NeedsRescan { get; set; }
 }

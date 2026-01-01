@@ -111,6 +111,21 @@ public sealed class ManifestFile
     /// Required if Strategy is VirtualDelta.
     /// </summary>
     public string? VirtualSignatureUrl { get; init; }
+
+    /// <summary>
+    /// SHA256 hash of the file at the time the base version was created.
+    /// Used for "UpdateIfNotModified" strategy - if local file matches this hash,
+    /// it hasn't been modified by the user and can be safely updated.
+    /// Only set when Strategy is UpdateIfNotModified.
+    /// </summary>
+    public string? BaseHash { get; init; }
+
+    /// <summary>
+    /// Whether this file's strategy was manually overridden (not auto-determined).
+    /// When true, the strategy was explicitly set by the developer rather than
+    /// being automatically determined based on file type/size.
+    /// </summary>
+    public bool IsStrategyOverride { get; init; }
 }
 
 /// <summary>
@@ -153,5 +168,13 @@ public enum UpdateStrategy
     /// Virtual delta patching for container formats (UOP, ZIP, BSA, etc.).
     /// Uses entry-level and sub-entry CDC chunking for efficient updates.
     /// </summary>
-    VirtualDelta
+    VirtualDelta,
+
+    /// <summary>
+    /// Update only if the local file matches the original hash from install.
+    /// If the user has modified the file (hash differs from BaseHash),
+    /// preserve their changes and skip the update.
+    /// Requires BaseHash to be set in the ManifestFile.
+    /// </summary>
+    UpdateIfNotModified
 }
