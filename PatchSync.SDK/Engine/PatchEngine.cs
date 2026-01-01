@@ -449,7 +449,7 @@ public sealed class PatchEngine : IDisposable
 
                 await _containerAssembler.AssembleAsync(
                     plan.TempPath,  // Write directly to temp path
-                    plan.ManifestFile.FileUrl ?? $"files/{plan.ManifestFile.Path}",
+                    plan.ManifestFile.FileUrl ?? plan.ManifestFile.Path,
                     plan.VirtualDeltaPlan,
                     plan.LocalPath,  // Local container path for copying entries
                     containerProgress,
