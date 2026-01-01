@@ -105,6 +105,7 @@ public static class VirtualSignatureFormat
 
         // Write entries
         Span<byte> entryBuffer = stackalloc byte[49]; // 2+8+4+1+32+4 = 51 minus entryId
+        Span<byte> chunkBuffer = stackalloc byte[ChunkEntrySize];
         foreach (var entry in signature.Entries)
         {
             var entryIdBytes = Encoding.UTF8.GetBytes(entry.EntryId);
@@ -127,7 +128,6 @@ public static class VirtualSignatureFormat
             // Write chunks if present
             if (entry.Chunks is { Count: > 0 })
             {
-                Span<byte> chunkBuffer = stackalloc byte[ChunkEntrySize];
                 foreach (var chunk in entry.Chunks)
                 {
                     BinaryPrimitives.WriteInt64LittleEndian(chunkBuffer[0..8], chunk.Offset);
@@ -197,11 +197,12 @@ public static class VirtualSignatureFormat
         // Read entries
         var entries = new EntrySignature[entryCount];
         Span<byte> entryBuffer = stackalloc byte[49];
+        Span<byte> idLenBytes = stackalloc byte[2];
+        Span<byte> chunkBuffer = stackalloc byte[ChunkEntrySize];
 
         for (int i = 0; i < entryCount; i++)
         {
             // Read entry ID
-            Span<byte> idLenBytes = stackalloc byte[2];
             if (!TryReadExact(input, idLenBytes))
                 throw new InvalidDataException($"Unexpected end of stream reading entry {i} ID length");
             int idLen = BinaryPrimitives.ReadUInt16LittleEndian(idLenBytes);
@@ -226,7 +227,6 @@ public static class VirtualSignatureFormat
             if (chunkCount > 0)
             {
                 var chunkList = new SignatureChunk[chunkCount];
-                Span<byte> chunkBuffer = stackalloc byte[ChunkEntrySize];
 
                 for (int j = 0; j < chunkCount; j++)
                 {

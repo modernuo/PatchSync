@@ -1,8 +1,6 @@
 using System.Security.Cryptography;
-using System.Text.Json;
 using PatchSync.Common.Chunking;
 using PatchSync.Common.Manifest;
-using PatchSync.Common.Signatures;
 using PatchSync.SDK.Engine;
 using PatchSync.SDK.Signatures;
 using PatchSync.SDK.Storage;

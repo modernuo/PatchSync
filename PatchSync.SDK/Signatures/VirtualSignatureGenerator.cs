@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using PatchSync.Common.Chunking;
-using PatchSync.Common.Containers;
 using PatchSync.Common.Signatures;
 using PatchSync.SDK.Containers;
 

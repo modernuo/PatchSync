@@ -1,4 +1,3 @@
-using System.Text.Json;
 using PatchSync.CLI.Workspace;
 
 namespace PatchSync.CLI.Tests;

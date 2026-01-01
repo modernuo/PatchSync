@@ -1,14 +1,12 @@
 using System.Diagnostics;
 using System.Text.Json;
 using PatchSync.CLI.Build;
-using PatchSync.CLI.Prompts;
 using PatchSync.CLI.Wizard;
 using PatchSync.CLI.Wizard.Steps;
 using PatchSync.CLI.Wizard.Themes;
 using PatchSync.CLI.Workspace;
 using PatchSync.Common.Chunking;
 using PatchSync.Common.Manifest;
-using PatchSync.SDK.Signatures;
 using Spectre.Console;
 
 namespace PatchSync.CLI.Commands;

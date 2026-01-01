@@ -221,7 +221,7 @@ public sealed class S3Client : IDisposable
         using var response = await _httpClient.SendAsync(request, cancellationToken);
         await EnsureSuccessAsync(response);
 
-        return response.Headers.ETag?.Tag?.Trim('"') ?? "";
+        return response.Headers.ETag?.Tag.Trim('"') ?? "";
     }
 
     private async Task CompleteMultipartUploadAsync(
@@ -432,7 +432,7 @@ public sealed class S3Client : IDisposable
             throw new HttpRequestException($"S3 HEAD request failed: {response.StatusCode} - {body}");
         }
 
-        var etag = response.Headers.ETag?.Tag?.Trim('"') ?? "";
+        var etag = response.Headers.ETag?.Tag.Trim('"') ?? "";
         var size = response.Content.Headers.ContentLength ?? 0;
         var lastModified = response.Content.Headers.LastModified?.UtcDateTime ?? DateTime.UtcNow;
 
@@ -476,7 +476,7 @@ public sealed class S3Client : IDisposable
             {
                 var key = content.Element(ns + "Key")?.Value ?? "";
                 var sizeStr = content.Element(ns + "Size")?.Value ?? "0";
-                var etag = content.Element(ns + "ETag")?.Value?.Trim('"') ?? "";
+                var etag = content.Element(ns + "ETag")?.Value.Trim('"') ?? "";
                 var lastModStr = content.Element(ns + "LastModified")?.Value;
 
                 results.Add(new S3ObjectInfo

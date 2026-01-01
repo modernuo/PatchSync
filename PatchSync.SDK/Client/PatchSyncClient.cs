@@ -2,12 +2,10 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using PatchSync.Common.Chunking;
 using PatchSync.Common.Manifest;
-using PatchSync.Common.Signatures;
 using PatchSync.Common.Storage;
 using PatchSync.SDK.Assembly;
 using PatchSync.SDK.Delta;
 using PatchSync.SDK.Engine;
-using PatchSync.SDK.Sources;
 
 namespace PatchSync.SDK.Client;
 

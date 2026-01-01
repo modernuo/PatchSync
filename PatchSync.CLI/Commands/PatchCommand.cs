@@ -1,4 +1,3 @@
-using PatchSync.CLI.Prompts;
 using PatchSync.CLI.Wizard;
 using PatchSync.CLI.Wizard.Steps;
 using PatchSync.CLI.Wizard.Themes;

@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using PatchSync.CLI.Wizard;
 using Spectre.Console;
 
 namespace PatchSync.CLI.Prompts;
