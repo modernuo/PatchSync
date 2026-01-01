@@ -3,11 +3,8 @@ using PatchSync.Common.Chunking;
 using PatchSync.Common.Signatures;
 using PatchSync.SDK.Assembly;
 using PatchSync.SDK.Client;
-using PatchSync.SDK.Containers;
 using PatchSync.SDK.Containers.Handlers;
 using PatchSync.SDK.Delta;
-using PatchSync.SDK.Engine;
-using PatchSync.SDK.Signatures;
 using PatchSync.SDK.Sources;
 using PatchSync.SDK.Storage;
 
@@ -41,6 +38,13 @@ class Program
             var oldFile = args[1];
             var newFile = args[2];
             return CompareUopEntries(oldFile, newFile);
+        }
+
+        // Handle analyze-gaps command
+        if (command == "analyze-gaps" && args.Length >= 2)
+        {
+            var uopFile = args[1];
+            return AnalyzeUopGaps(uopFile);
         }
 
         // Handle test-tar command (no required args)
@@ -164,6 +168,7 @@ class Program
         Console.WriteLine("  full     Run scan, patch, and verify in sequence");
         Console.WriteLine("  diag     Diagnostic: patch a single file with detailed output");
         Console.WriteLine("  analyze  Analyze delta between two local files");
+        Console.WriteLine("  analyze-gaps  Analyze gaps between entries in UOP file");
         Console.WriteLine("  test-tar Test CDC behavior with TAR files");
         Console.WriteLine();
         Console.WriteLine("Examples:");
@@ -173,6 +178,7 @@ class Program
         Console.WriteLine("  PatchSync.TestClient analyze <old-file> <new-file>");
         Console.WriteLine("  PatchSync.TestClient test-tar [output-dir]");
         Console.WriteLine("  PatchSync.TestClient diag https://cdn.example.com C:\\Game map2LegacyMUL.uop");
+        Console.WriteLine("  PatchSync.TestClient analyze-gaps map0LegacyMUL.uop");
         return 1;
     }
 
@@ -323,6 +329,75 @@ class Program
             }
         }
 
+        // Verify CopyLocal entry hashes match
+        if (File.Exists(localFilePath))
+        {
+            Console.WriteLine();
+            Console.WriteLine("   Verifying CopyLocal entries hash integrity...");
+            await using var localFs = File.OpenRead(localFilePath);
+            var mismatchCount = 0;
+
+            // Look up target StoredHash for each CopyLocal entry
+            var targetHashByEntryId = signature.Entries.ToDictionary(e => e.EntryId, e => e.StoredHash);
+
+            foreach (var e in plan.Entries.Where(ep => ep.Method == EntryMethod.CopyLocal))
+            {
+                if (!e.LocalSource.HasValue) continue;
+                var src = e.LocalSource.Value;
+
+                // Read local data at the source offset
+                localFs.Position = src.Offset;
+                var localData = new byte[src.Size];
+                await localFs.ReadAsync(localData);
+
+                // Compute hash of local data
+                var localHash = SHA256.HashData(localData);
+                var localHashHex = Convert.ToHexString(localHash).ToLowerInvariant();
+
+                // Get expected hash and size from target signature
+                var targetEntry = signature.Entries.FirstOrDefault(te => te.EntryId == e.EntryId);
+                if (targetEntry != null)
+                {
+                    var expectedHashHex = Convert.ToHexString(targetEntry.StoredHash).ToLowerInvariant();
+
+                    // Check for size mismatch first
+                    if (src.Size != targetEntry.StoredSize)
+                    {
+                        Console.WriteLine($"     SIZE MISMATCH for [{e.EntryId}]:");
+                        Console.WriteLine($"       LocalSource.Size: {src.Size:N0}");
+                        Console.WriteLine($"       TargetEntry.StoredSize: {targetEntry.StoredSize:N0}");
+                        Console.WriteLine($"       EntryPlan.Size: {e.Size:N0}");
+                    }
+
+                    if (localHashHex != expectedHashHex)
+                    {
+                        mismatchCount++;
+                        if (mismatchCount <= 5)
+                        {
+                            Console.WriteLine($"     HASH MISMATCH for [{e.EntryId}]:");
+                            Console.WriteLine($"       LocalSource.Offset: {src.Offset:N0}, LocalSource.Size: {src.Size:N0}");
+                            Console.WriteLine($"       EntryPlan.Size (target): {e.Size:N0}");
+                            Console.WriteLine($"       Local data hash:    {localHashHex}");
+                            Console.WriteLine($"       Expected (target):  {expectedHashHex}");
+                            Console.WriteLine($"       Local data[0:32]:   {Convert.ToHexString(localData.Take(32).ToArray())}");
+
+                            // Also show what hash we indexed for this local entry
+                            Console.WriteLine($"       Note: The hash lookup matched, so the indexed hash should equal expected");
+                        }
+                    }
+                }
+            }
+
+            if (mismatchCount > 0)
+            {
+                Console.WriteLine($"     TOTAL HASH MISMATCHES: {mismatchCount}");
+            }
+            else
+            {
+                Console.WriteLine("     All CopyLocal entries have matching hashes.");
+            }
+        }
+
         var deltaEntries = plan.Entries.Where(e => e.Method == EntryMethod.DeltaChunks).Take(3).ToList();
         if (deltaEntries.Count > 0)
         {
@@ -416,12 +491,18 @@ class Program
             bool foundDiff = false;
             int diffCount = 0;
 
+            // Copy expected stream to memory for proper comparison (avoid partial reads from HTTP stream)
+            var expectedMs = new MemoryStream();
+            await expectedFs.CopyToAsync(expectedMs);
+            expectedMs.Position = 0;
+
             while (!foundDiff || diffCount < 5)
             {
                 var read1 = await diagFs.ReadAsync(buffer1);
-                var read2 = await expectedFs.ReadAsync(buffer2.AsMemory(0, read1));
+                var read2 = await expectedMs.ReadAsync(buffer2.AsMemory(0, read1));
 
                 if (read1 == 0) break;
+                if (read2 != read1) break;
 
                 for (int i = 0; i < read1; i++)
                 {
@@ -462,6 +543,17 @@ class Program
                             else
                             {
                                 Console.WriteLine($"     Not in any entry - likely container header/block table");
+                                // Find nearby entries
+                                var prevEntry = plan.Entries.Where(e => e.HeaderOffset + e.TotalSize <= diffOffset)
+                                    .OrderByDescending(e => e.HeaderOffset + e.TotalSize)
+                                    .FirstOrDefault();
+                                var nextEntry = plan.Entries.Where(e => e.HeaderOffset > diffOffset)
+                                    .OrderBy(e => e.HeaderOffset)
+                                    .FirstOrDefault();
+                                if (prevEntry != null)
+                                    Console.WriteLine($"     Prev entry ends at: {prevEntry.HeaderOffset + prevEntry.TotalSize:N0}");
+                                if (nextEntry != null)
+                                    Console.WriteLine($"     Next entry starts at: {nextEntry.HeaderOffset:N0}");
                             }
                         }
 
@@ -953,6 +1045,204 @@ class Program
                 Console.WriteLine($"    Stored: {oldSize} → {newSize} (diff: {newSize - oldSize:+#;-#;0})");
                 Console.WriteLine($"    Decomp: {oldDecomp} → {newDecomp} (diff: {newDecomp - oldDecomp:+#;-#;0})");
             }
+        }
+
+        return 0;
+    }
+
+    static int AnalyzeUopGaps(string uopFile)
+    {
+        Console.WriteLine($"=== UOP GAP ANALYSIS ===");
+        Console.WriteLine($"File: {uopFile}");
+        Console.WriteLine();
+
+        if (!File.Exists(uopFile))
+        {
+            Console.WriteLine($"Error: File not found: {uopFile}");
+            return 1;
+        }
+
+        var handler = new UopHandler();
+        using var stream = File.OpenRead(uopFile);
+        var info = handler.Parse(stream);
+
+        Console.WriteLine($"File size: {FormatSize(info.TotalSize)} ({info.TotalSize:N0} bytes)");
+        Console.WriteLine($"Entries: {info.Entries.Count}");
+        Console.WriteLine();
+
+        // Calculate entry ranges
+        var entryRanges = info.Entries
+            .Select(e => new {
+                Entry = e,
+                HeaderOffset = e.Offset - e.HeaderSize, // Header starts before data offset
+                EndOffset = e.Offset + e.StoredSize,    // End of data
+                TotalSize = e.HeaderSize + e.StoredSize
+            })
+            .OrderBy(e => e.HeaderOffset)
+            .ToList();
+
+        // Find UOP header and block tables first
+        stream.Position = 0;
+        var fileHeader = new byte[28];
+        stream.Read(fileHeader);
+
+        // Parse header
+        long firstBlockOffset = BitConverter.ToInt64(fileHeader, 12);
+        uint blockCapacity = BitConverter.ToUInt32(fileHeader, 20);
+        int fileCount = BitConverter.ToInt32(fileHeader, 24);
+
+        Console.WriteLine("=== FILE STRUCTURE ===");
+        Console.WriteLine($"Header: 0 - 28 bytes (28 bytes)");
+        Console.WriteLine($"First block at: {firstBlockOffset} (0x{firstBlockOffset:X})");
+        Console.WriteLine($"Block capacity: {blockCapacity}");
+        Console.WriteLine($"File count: {fileCount}");
+        Console.WriteLine();
+
+        // Collect all block table locations
+        var blockTables = new List<(long Offset, int Size, int EntryCount)>();
+        long nextBlock = firstBlockOffset;
+        var blockHeader = new byte[12];
+
+        while (nextBlock != 0)
+        {
+            stream.Position = nextBlock;
+            stream.Read(blockHeader);
+
+            int entryCount = BitConverter.ToInt32(blockHeader, 0);
+            long nextBlockPtr = BitConverter.ToInt64(blockHeader, 4);
+
+            int blockSize = 12 + entryCount * 34; // 12-byte header + 34-byte entries
+            blockTables.Add((nextBlock, blockSize, entryCount));
+
+            nextBlock = nextBlockPtr;
+        }
+
+        Console.WriteLine($"=== BLOCK TABLES ({blockTables.Count}) ===");
+        foreach (var (offset, size, entryCount) in blockTables)
+        {
+            Console.WriteLine($"  Block at {offset,10} (0x{offset:X8}): {entryCount} entries, {size} bytes");
+        }
+        Console.WriteLine();
+
+        // Now find all gaps in the file
+        var usedRanges = new List<(long Start, long End, string Type)>();
+
+        // File header
+        usedRanges.Add((0, 28, "FILE_HEADER"));
+
+        // Block tables
+        foreach (var (offset, size, _) in blockTables)
+        {
+            usedRanges.Add((offset, offset + size, "BLOCK_TABLE"));
+        }
+
+        // Entries (header + data)
+        foreach (var e in entryRanges)
+        {
+            usedRanges.Add((e.HeaderOffset, e.EndOffset, $"ENTRY[{e.Entry.EntryId}]"));
+        }
+
+        // Sort by start offset
+        usedRanges = usedRanges.OrderBy(r => r.Start).ToList();
+
+        // Find gaps
+        var gaps = new List<(long Start, long End, long Size, string Context)>();
+        long currentPos = 0;
+
+        foreach (var (start, end, type) in usedRanges)
+        {
+            if (start > currentPos)
+            {
+                // There's a gap
+                var prevRange = usedRanges.LastOrDefault(r => r.End <= currentPos);
+                var prevType = prevRange != default ? prevRange.Type : "FILE_START";
+                gaps.Add((currentPos, start, start - currentPos, $"After {prevType}"));
+            }
+            currentPos = Math.Max(currentPos, end);
+        }
+
+        // Check for trailing data after last used range
+        if (currentPos < info.TotalSize)
+        {
+            var lastRange = usedRanges.Last();
+            gaps.Add((currentPos, info.TotalSize, info.TotalSize - currentPos, $"After {lastRange.Type}"));
+        }
+
+        Console.WriteLine($"=== GAPS FOUND: {gaps.Count} ===");
+
+        long totalGapBytes = 0;
+        foreach (var (start, end, size, context) in gaps)
+        {
+            totalGapBytes += size;
+
+            // Read the gap data to analyze its content
+            stream.Position = start;
+            var gapData = new byte[Math.Min(size, 1024)]; // Read up to 1KB for analysis
+            stream.Read(gapData);
+
+            // Analyze content
+            var allZeros = gapData.All(b => b == 0);
+            var nonZeroCount = gapData.Count(b => b != 0);
+            var uniqueBytes = gapData.Distinct().Count();
+
+            string contentType;
+            if (allZeros && size == gapData.Length)
+            {
+                contentType = "ALL_ZEROS (padding)";
+            }
+            else if ((double)nonZeroCount / gapData.Length < 0.05)
+            {
+                contentType = "MOSTLY_ZEROS (sparse data)";
+            }
+            else if (uniqueBytes < 10)
+            {
+                contentType = "REPETITIVE_DATA";
+            }
+            else
+            {
+                contentType = "BINARY_DATA";
+            }
+
+            Console.WriteLine($"  Gap: {start,10} - {end,10} ({FormatSize(size),10}) | {contentType}");
+            Console.WriteLine($"        Context: {context}");
+
+            // Show first 32 bytes as hex if not all zeros
+            if (!allZeros)
+            {
+                Console.WriteLine($"        First 32 bytes: {Convert.ToHexString(gapData.Take(32).ToArray())}");
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"=== SUMMARY ===");
+        Console.WriteLine($"Total file size:     {FormatSize(info.TotalSize)}");
+        Console.WriteLine($"Entry data:          {FormatSize(entryRanges.Sum(e => (long)e.TotalSize))}");
+        Console.WriteLine($"Block table data:    {FormatSize(blockTables.Sum(b => (long)b.Size))}");
+        Console.WriteLine($"File header:         28 bytes");
+        Console.WriteLine($"Gap data (unused):   {FormatSize(totalGapBytes)} ({(double)totalGapBytes / info.TotalSize:P1})");
+
+        // Breakdown of gaps
+        var zeroGaps = gaps.Where(g =>
+        {
+            stream.Position = g.Start;
+            var data = new byte[Math.Min(g.Size, 4096)];
+            stream.Read(data);
+            return data.All(b => b == 0);
+        }).Sum(g => g.Size);
+
+        var nonZeroGaps = totalGapBytes - zeroGaps;
+
+        Console.WriteLine();
+        Console.WriteLine($"  Zero-filled gaps:    {FormatSize(zeroGaps)}");
+        Console.WriteLine($"  Non-zero gaps:       {FormatSize(nonZeroGaps)}");
+
+        if (nonZeroGaps > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Note: Non-zero gaps may contain:");
+            Console.WriteLine("  - Leftover data from previous versions");
+            Console.WriteLine("  - Alignment padding with garbage values");
+            Console.WriteLine("  - Unused but preserved file structure");
         }
 
         return 0;

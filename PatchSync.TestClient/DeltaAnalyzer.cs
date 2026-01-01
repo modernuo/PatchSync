@@ -1,6 +1,4 @@
-using System.Security.Cryptography;
 using PatchSync.Common.Chunking;
-using PatchSync.Common.Hashing;
 using PatchSync.Common.Signatures;
 using PatchSync.SDK.Delta;
 using PatchSync.SDK.Sources;
