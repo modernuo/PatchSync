@@ -436,15 +436,14 @@ public static class BuildCommand
             .AutoClear(false)
             .StartAsync(async ctx =>
             {
-                var display = new LiveBuildProgress(ctx, workerCount);
-                var progress = new Progress<ParallelBuildProgress>(p => display.Update(p));
+                var display = new LiveBuildProgress(ctx);
 
                 manifest = await parallelBuilder.BuildAsync(
                     inputPath,
                     version,
                     "", // Base URL will be set at publish time
                     buildOptions,
-                    progress);
+                    display); // Pass directly - implements IProgress<T> synchronously
             });
 
         stopwatch.Stop();
@@ -523,6 +522,10 @@ public static class BuildCommand
 
         // Update workspace state
         var state = await manager.LoadStateAsync();
+
+        // Remove any existing pending publish for this channel (new build replaces old)
+        state.PendingPublish.RemoveAll(p => p.Channel == channel);
+
         state.PendingPublish.Add(new PendingPublishInfo
         {
             Channel = channel,
@@ -639,15 +642,14 @@ public static class BuildCommand
             .AutoClear(false)
             .StartAsync(async ctx =>
             {
-                var display = new LiveBuildProgress(ctx, workerCount);
-                var progress = new Progress<ParallelBuildProgress>(p => display.Update(p));
+                var display = new LiveBuildProgress(ctx);
 
                 manifest = await parallelBuilder.BuildAsync(
                     inputPath,
                     version,
                     baseUrl,
                     buildOptions,
-                    progress);
+                    display); // Pass directly - implements IProgress<T> synchronously
             });
 
         // Write manifest

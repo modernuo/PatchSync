@@ -206,6 +206,7 @@ public static class WizardPrompt
 
     /// <summary>
     /// Show a multi-selection prompt with back/cancel.
+    /// Back and Cancel appear as selectable items - select them to navigate.
     /// </summary>
     public static WizardResult<List<string>> MultiSelect(
         string title,
@@ -215,49 +216,58 @@ public static class WizardPrompt
         bool allowBack = true,
         bool required = true)
     {
-        // First, show a navigation prompt
-        var navChoices = new List<string>();
-        if (allowBack)
-        {
-            navChoices.Add(theme.BackMarker);
-            if (!string.IsNullOrEmpty(theme.Separator))
-                navChoices.Add(theme.Separator);
-        }
-        navChoices.Add(":ballot_box_with_check: Make selections");
-        if (!string.IsNullOrEmpty(theme.Separator))
-            navChoices.Add(theme.Separator);
-        navChoices.Add(theme.CancelMarker);
+        var choiceList = choices.ToList();
 
-        var navPrompt = new SelectionPrompt<string>()
-            .Title(theme.FormatPrompt(title))
-            .HighlightStyle(theme.HighlightStyle)
-            .AddChoices(navChoices);
-
-        var navResult = AnsiConsole.Prompt(navPrompt);
-
-        if (navResult == theme.BackMarker)
-            return WizardResult<List<string>>.Back;
-        if (navResult == theme.CancelMarker)
-            return WizardResult<List<string>>.Cancel;
-
-        // Show the actual multi-select
+        // Build the multi-select with navigation items included
         var multiPrompt = new MultiSelectionPrompt<string>()
-            .Title("[grey]Space to toggle, Enter to confirm[/]")
+            .Title(theme.FormatPrompt(title))
             .PageSize(theme.PageSize)
             .HighlightStyle(theme.HighlightStyle)
-            .AddChoices(choices);
+            .InstructionsText("[grey](Space to toggle, Enter to confirm)[/]");
 
-        if (!required)
-            multiPrompt.NotRequired();
+        // Add Back at top if allowed
+        if (allowBack)
+        {
+            multiPrompt.AddChoice(theme.BackMarker);
+        }
 
+        // Add actual choices
+        multiPrompt.AddChoices(choiceList);
+
+        // Add Cancel at bottom
+        multiPrompt.AddChoice(theme.CancelMarker);
+
+        // Not required so user can select just Back or Cancel
+        multiPrompt.NotRequired();
+
+        // Pre-select items (but not navigation markers)
         if (preselected != null)
         {
-            foreach (var item in preselected)
+            foreach (var item in preselected.Where(p => choiceList.Contains(p)))
                 multiPrompt.Select(item);
         }
 
         var selected = AnsiConsole.Prompt(multiPrompt);
-        return WizardResult<List<string>>.Success(selected.ToList());
+
+        // Check for navigation
+        if (selected.Contains(theme.BackMarker))
+            return WizardResult<List<string>>.Back;
+        if (selected.Contains(theme.CancelMarker))
+            return WizardResult<List<string>>.Cancel;
+
+        // Filter out any navigation markers and return actual selections
+        var actualSelections = selected
+            .Where(s => s != theme.BackMarker && s != theme.CancelMarker)
+            .ToList();
+
+        // If required and nothing selected, re-prompt
+        if (required && actualSelections.Count == 0)
+        {
+            AnsiConsole.MarkupLine("[yellow]Please select at least one item.[/]");
+            return MultiSelect(title, choices, theme, preselected, allowBack, required);
+        }
+
+        return WizardResult<List<string>>.Success(actualSelections);
     }
 
     /// <summary>

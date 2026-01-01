@@ -12,7 +12,7 @@ public sealed class DefaultTheme : IWizardTheme
 
     public string BackMarker => ":left_arrow: Back";
     public string CancelMarker => ":cross_mark: Cancel";
-    public string Separator => "───────────────────────────";
+    public string Separator => ""; // Empty - separators can't be disabled in Spectre.Console
     public string NavigationHint => "[grey](type 'back' or 'cancel')[/]";
 
     public Style HighlightStyle => new(Color.Cyan1);

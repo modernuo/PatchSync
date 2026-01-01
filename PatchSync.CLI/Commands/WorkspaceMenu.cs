@@ -62,6 +62,8 @@ public static class WorkspaceMenu
                 var (exitCode, workspace) = await InitCommand.RunWizardAndGetWorkspaceAsync();
                 if (exitCode == 0 && workspace != null)
                 {
+                    // Change to workspace directory so commands can find it
+                    Directory.SetCurrentDirectory(workspace.WorkspacePath);
                     // Init succeeded - open the workspace directly
                     return await ShowWorkspaceMenuAsync(workspace);
                 }
@@ -117,6 +119,9 @@ public static class WorkspaceMenu
             Console.ReadKey(true);
             return Task.FromResult<WorkspaceManager?>(null);
         }
+
+        // Change to workspace directory so commands can find it
+        Directory.SetCurrentDirectory(manager.WorkspacePath);
 
         return Task.FromResult<WorkspaceManager?>(manager);
     }
@@ -271,8 +276,8 @@ public static class WorkspaceMenu
                     var version = channelState.Current?.Version ?? "-";
                     var status = channelState.Current != null ? "[green]Live[/]" : "[grey]No versions[/]";
 
-                    // Check for pending publish
-                    var pending = state.PendingPublish.FirstOrDefault(p => p.Channel == channelId);
+                    // Check for pending publish (use LastOrDefault to get most recent)
+                    var pending = state.PendingPublish.LastOrDefault(p => p.Channel == channelId);
                     if (pending != null)
                     {
                         version = pending.Version;
