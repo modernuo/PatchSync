@@ -4,7 +4,6 @@ using PatchSync.Common.Signatures;
 using PatchSync.Common.Storage;
 using PatchSync.SDK.Containers;
 using PatchSync.SDK.Delta;
-using PatchSync.SDK.Sources;
 using PatchSync.SDK.Storage;
 
 namespace PatchSync.SDK.Assembly;
@@ -221,6 +220,37 @@ public sealed class ContainerAssembler
                         ranges.Add(new ByteRange(absoluteOffset, action.Length));
                     }
                     break;
+            }
+        }
+
+        // Add inter-entry gaps (structural data between entries)
+        // UOP files may have alignment padding, block tables, or other metadata between entries
+        var sortedEntries = plan.Entries.OrderBy(e => e.HeaderOffset).ToList();
+        for (int i = 0; i < sortedEntries.Count - 1; i++)
+        {
+            var current = sortedEntries[i];
+            var next = sortedEntries[i + 1];
+
+            var currentEnd = current.HeaderOffset + current.TotalSize;
+            var nextStart = next.HeaderOffset;
+
+            if (nextStart > currentEnd)
+            {
+                // There's a gap between entries - download it
+                ranges.Add(new ByteRange(currentEnd, nextStart - currentEnd));
+            }
+        }
+
+        // Add gap after last entry (if file extends beyond last entry)
+        if (sortedEntries.Count > 0)
+        {
+            var lastEntry = sortedEntries[^1];
+            var lastEntryEnd = lastEntry.HeaderOffset + lastEntry.TotalSize;
+            var totalSize = plan.Signature.TotalSize;
+
+            if (totalSize > lastEntryEnd)
+            {
+                ranges.Add(new ByteRange(lastEntryEnd, totalSize - lastEntryEnd));
             }
         }
 
