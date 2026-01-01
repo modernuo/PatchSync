@@ -1,5 +1,3 @@
-using Spectre.Console;
-
 namespace PatchSync.CLI.Wizard;
 
 /// <summary>
@@ -74,6 +72,8 @@ public sealed class WizardRunner
             catch (OperationCanceledException)
             {
                 // Treat Ctrl+C as "back" navigation
+                // Reset the cancellation token so the next prompt can work
+                InteractiveCancellation.Instance.Reset();
                 result = WizardResult<object?>.Back;
             }
 

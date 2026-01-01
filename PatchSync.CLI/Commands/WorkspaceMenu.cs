@@ -53,16 +53,20 @@ public static class WorkspaceMenu
             string selection;
             try
             {
-                selection = AnsiConsole.Prompt(
-                    new SelectionPrompt<string>()
-                        .Title("[yellow]What would you like to do?[/]")
-                        .PageSize(10)
-                        .HighlightStyle(new Style(Color.Green))
-                        .AddChoices(choices));
+                var prompt = new SelectionPrompt<string>()
+                    .Title("[yellow]What would you like to do?[/]")
+                    .PageSize(10)
+                    .HighlightStyle(new Style(Color.Green))
+                    .AddChoices(choices);
+
+                selection = await prompt.ShowAsync(AnsiConsole.Console, InteractiveCancellation.Instance.Token);
             }
             catch (OperationCanceledException)
             {
-                // Ctrl+C pressed - check for double-press exit
+                // Ctrl+C pressed - reset the token for future prompts
+                InteractiveCancellation.Instance.Reset();
+
+                // Check for double-press exit
                 if (CancellationTracker.Instance.IsDoublePress())
                 {
                     AnsiConsole.MarkupLine("\n[grey]Exiting...[/]");
@@ -204,16 +208,20 @@ public static class WorkspaceMenu
             string selection;
             try
             {
-                selection = AnsiConsole.Prompt(
-                    new SelectionPrompt<string>()
-                        .Title("[yellow]What would you like to do?[/]")
-                        .PageSize(12)
-                        .HighlightStyle(new Style(Color.Green))
-                        .AddChoices(choices.Where(c => !string.IsNullOrEmpty(c))));
+                var prompt = new SelectionPrompt<string>()
+                    .Title("[yellow]What would you like to do?[/]")
+                    .PageSize(12)
+                    .HighlightStyle(new Style(Color.Green))
+                    .AddChoices(choices.Where(c => !string.IsNullOrEmpty(c)));
+
+                selection = await prompt.ShowAsync(AnsiConsole.Console, InteractiveCancellation.Instance.Token);
             }
             catch (OperationCanceledException)
             {
-                // Ctrl+C pressed - check for double-press exit
+                // Ctrl+C pressed - reset the token for future prompts
+                InteractiveCancellation.Instance.Reset();
+
+                // Check for double-press exit
                 if (CancellationTracker.Instance.IsDoublePress())
                 {
                     AnsiConsole.MarkupLine("\n[grey]Exiting...[/]");
@@ -395,10 +403,20 @@ public static class WorkspaceMenu
                 ":left_arrow: Back"
             };
 
-            var selection = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
+            string selection;
+            try
+            {
+                var prompt = new SelectionPrompt<string>()
                     .Title("[yellow]Version management:[/]")
-                    .AddChoices(choices));
+                    .AddChoices(choices);
+
+                selection = await prompt.ShowAsync(AnsiConsole.Console, InteractiveCancellation.Instance.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                InteractiveCancellation.Instance.Reset();
+                return; // Go back to previous menu
+            }
 
             if (selection.Contains("List"))
             {
@@ -445,10 +463,20 @@ public static class WorkspaceMenu
             ":left_arrow: Back"
         };
 
-        var selection = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
+        string selection;
+        try
+        {
+            var prompt = new SelectionPrompt<string>()
                 .Title("[yellow]Settings:[/]")
-                .AddChoices(choices));
+                .AddChoices(choices);
+
+            selection = await prompt.ShowAsync(AnsiConsole.Console, InteractiveCancellation.Instance.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            InteractiveCancellation.Instance.Reset();
+            return; // Go back to previous menu
+        }
 
         if (selection.Contains("Edit configuration"))
         {
@@ -532,16 +560,20 @@ public static class WorkspaceMenu
             string selection;
             try
             {
-                selection = AnsiConsole.Prompt(
-                    new SelectionPrompt<string>()
-                        .Title("[yellow]Select a tool:[/]")
-                        .PageSize(12)
-                        .HighlightStyle(new Style(Color.Green))
-                        .AddChoices(choices.Where(c => !string.IsNullOrEmpty(c))));
+                var prompt = new SelectionPrompt<string>()
+                    .Title("[yellow]Select a tool:[/]")
+                    .PageSize(12)
+                    .HighlightStyle(new Style(Color.Green))
+                    .AddChoices(choices.Where(c => !string.IsNullOrEmpty(c)));
+
+                selection = await prompt.ShowAsync(AnsiConsole.Console, InteractiveCancellation.Instance.Token);
             }
             catch (OperationCanceledException)
             {
-                // Ctrl+C pressed - check for double-press exit
+                // Ctrl+C pressed - reset the token for future prompts
+                InteractiveCancellation.Instance.Reset();
+
+                // Check for double-press exit
                 if (CancellationTracker.Instance.IsDoublePress())
                 {
                     AnsiConsole.MarkupLine("\n[grey]Exiting...[/]");
