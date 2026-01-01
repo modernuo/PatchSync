@@ -166,6 +166,7 @@ public static class WorkspaceMenu
                 ":hammer: Build new version",
                 ":bar_chart: View status",
                 ":outbox_tray: Publish version",
+                ":package: Manage versions",
                 ":check_mark_button: Verify installation",
                 ":hammer_and_wrench:  Settings",
                 "",
@@ -221,8 +222,16 @@ public static class WorkspaceMenu
         {
             AnsiConsole.Clear();
             AnsiConsole.MarkupLine("[bold blue]:outbox_tray: PUBLISH VERSION[/]\n");
-            await RunWorkspacePublishAsync(workspace, config);
+            await PublishCommand.RunWizardAsync(workspace);
             WaitForKey();
+            return 0;
+        }
+
+        if (selection.Contains("Manage versions"))
+        {
+            AnsiConsole.Clear();
+            AnsiConsole.MarkupLine("[bold blue]:package: MANAGE VERSIONS[/]\n");
+            await ShowVersionsMenuAsync(workspace, config);
             return 0;
         }
 
@@ -370,50 +379,64 @@ public static class WorkspaceMenu
         await BuildCommand.RunAsync(args);
     }
 
-    private static async Task RunWorkspacePublishAsync(WorkspaceManager workspace, WorkspaceConfig? config)
+    private static async Task ShowVersionsMenuAsync(WorkspaceManager workspace, WorkspaceConfig? config)
     {
         if (config == null)
         {
             AnsiConsole.MarkupLine("[red]Cannot load workspace configuration.[/]");
+            WaitForKey();
             return;
         }
 
-        // Load state to find staged versions
-        var state = await workspace.LoadStateAsync();
-
-        if (state.PendingPublish.Count == 0)
+        while (true)
         {
-            AnsiConsole.MarkupLine("[yellow]No versions are staged for publishing.[/]");
-            AnsiConsole.MarkupLine("[grey]Build a new version first.[/]");
-            return;
+            var choices = new[]
+            {
+                ":clipboard: List all versions",
+                ":cloud: Check remote versions",
+                ":broom: Cleanup old versions",
+                ":counterclockwise_arrows_button: Rollback to previous version",
+                ":left_arrow: Back"
+            };
+
+            var selection = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("[yellow]Version management:[/]")
+                    .AddChoices(choices));
+
+            if (selection.Contains("List"))
+            {
+                AnsiConsole.Clear();
+                await VersionsCommand.RunAsync(["list"]);
+                WaitForKey();
+                AnsiConsole.Clear();
+            }
+            else if (selection.Contains("Check remote"))
+            {
+                AnsiConsole.Clear();
+                await VersionsCommand.RunAsync(["check"]);
+                WaitForKey();
+                AnsiConsole.Clear();
+            }
+            else if (selection.Contains("Cleanup"))
+            {
+                AnsiConsole.Clear();
+                await VersionsCommand.RunAsync(["cleanup"]);
+                WaitForKey();
+                AnsiConsole.Clear();
+            }
+            else if (selection.Contains("Rollback"))
+            {
+                AnsiConsole.Clear();
+                await VersionsCommand.RunAsync(["rollback"]);
+                WaitForKey();
+                AnsiConsole.Clear();
+            }
+            else if (selection.Contains("Back"))
+            {
+                return;
+            }
         }
-
-        // Select version to publish
-        var choices = state.PendingPublish
-            .Select(p => $"{p.Channel}/{p.Version} (staged {p.StagedAt:g})")
-            .ToList();
-
-        var selection = AnsiConsole.Prompt(
-            new SelectionPrompt<string>()
-                .Title("[green]Select version to publish:[/]")
-                .AddChoices(choices));
-
-        var parts = selection.Split('/');
-        var channel = parts[0];
-        var version = parts[1].Split(' ')[0]; // Remove the staged date part
-
-        // Get publish profile
-        var channelConfig = config.Channels.GetValueOrDefault(channel);
-        var profileName = channelConfig?.Publish?.Profile;
-
-        if (string.IsNullOrEmpty(profileName) || !config.PublishProfiles.TryGetValue(profileName, out var profile))
-        {
-            AnsiConsole.MarkupLine($"[red]No publish profile configured for channel '{channel}'.[/]");
-            return;
-        }
-
-        AnsiConsole.MarkupLine($"[blue]Publishing {channel}/{version} to {profile.Bucket}...[/]");
-        AnsiConsole.MarkupLine("[yellow]Note: Upload functionality not yet implemented for workspace mode.[/]");
     }
 
     private static async Task ShowSettingsMenuAsync(WorkspaceManager workspace, WorkspaceConfig? config)

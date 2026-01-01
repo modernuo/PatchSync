@@ -195,13 +195,16 @@ public sealed class UopHandler : IContainerHandler
     {
         container.Position = 0;
 
-        // For UOP, HeaderTemplate contains ONLY the structural metadata:
+        // For UOP, HeaderTemplate contains the structural metadata:
         // - File header (28 bytes)
+        // - Pre-entry gap (bytes between header and first entry, for padding/alignment)
         // - All block tables (block headers + entry metadata)
         // Entry DATA is NOT included - that's what we reconstruct via delta patching.
         //
         // We serialize this as a compact format:
         // [FileHeader: 28 bytes]
+        // [PreEntryGapLen: 4 bytes]
+        // [PreEntryGap: N bytes]
         // [BlockCount: 4 bytes]
         // [Block0Offset: 8 bytes][Block0Data: 12 + N*34 bytes]
         // [Block1Offset: 8 bytes][Block1Data: ...]
@@ -217,6 +220,25 @@ public sealed class UopHandler : IContainerHandler
         // Parse header to find first block
         long nextBlockOffset = BinaryPrimitives.ReadInt64LittleEndian(fileHeader.AsSpan(12, 8));
         uint blockCapacity = BinaryPrimitives.ReadUInt32LittleEndian(fileHeader.AsSpan(20, 4));
+
+        // Find the first entry's header offset to determine pre-entry gap
+        long firstEntryOffset = info.Entries.Count > 0
+            ? info.Entries.Min(e => e.Offset - e.HeaderSize)  // HeaderOffset = Offset - HeaderSize
+            : container.Length;
+
+        // Capture pre-entry gap (bytes between file header and first entry)
+        int preEntryGapLen = (int)Math.Max(0, firstEntryOffset - HeaderSize);
+        Span<byte> gapLenBuffer = stackalloc byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(gapLenBuffer, preEntryGapLen);
+        templateStream.Write(gapLenBuffer);
+
+        if (preEntryGapLen > 0)
+        {
+            container.Position = HeaderSize;
+            var gapData = new byte[preEntryGapLen];
+            container.ReadExactly(gapData);
+            templateStream.Write(gapData);
+        }
 
         Span<byte> blockHeader = stackalloc byte[12];
 
@@ -278,6 +300,8 @@ public sealed class UopHandler : IContainerHandler
     {
         // HeaderTemplate contains compact format:
         // [FileHeader: 28 bytes]
+        // [PreEntryGapLen: 4 bytes]
+        // [PreEntryGap: N bytes]
         // [BlockCount: 4 bytes]
         // [Block0Offset: 8 bytes][Block0Data: N bytes]
         // ...
@@ -292,6 +316,19 @@ public sealed class UopHandler : IContainerHandler
         templateStream.ReadExactly(fileHeader);
         output.Position = 0;
         output.Write(fileHeader);
+
+        // Read and write pre-entry gap
+        Span<byte> gapLenBuffer = stackalloc byte[4];
+        templateStream.ReadExactly(gapLenBuffer);
+        int preEntryGapLen = BinaryPrimitives.ReadInt32LittleEndian(gapLenBuffer);
+
+        if (preEntryGapLen > 0)
+        {
+            var gapData = new byte[preEntryGapLen];
+            templateStream.ReadExactly(gapData);
+            output.Position = HeaderSize;
+            output.Write(gapData);
+        }
 
         // Read block count
         Span<byte> countBuffer = stackalloc byte[4];

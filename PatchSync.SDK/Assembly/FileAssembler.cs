@@ -244,6 +244,16 @@ public sealed class AssemblyOptions
     /// For local/high-speed connections, consider 256KB-1MB.
     /// </summary>
     public int MaxCoalesceGap { get; init; } = 65536; // 64KB
+
+    /// <summary>
+    /// If true, temp files are preserved on failure for debugging.
+    /// </summary>
+    public bool PreserveTempOnFailure { get; init; }
+
+    /// <summary>
+    /// If true, skip final hash verification (for debugging).
+    /// </summary>
+    public bool SkipVerification { get; init; }
 }
 
 /// <summary>

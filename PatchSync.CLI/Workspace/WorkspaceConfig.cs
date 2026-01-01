@@ -148,4 +148,25 @@ public sealed class PublishProfile
 
     /// <summary>How to obtain credentials: "environment", "stored", or "prompt"</summary>
     public string CredentialSource { get; set; } = "environment";
+
+    /// <summary>Use path-style URLs for S3 requests</summary>
+    public bool PathStyle { get; set; } = true;
+
+    /// <summary>CDN configuration for cache management</summary>
+    public CdnConfig? Cdn { get; set; }
+}
+
+/// <summary>
+/// CDN configuration for cache purging
+/// </summary>
+public sealed class CdnConfig
+{
+    /// <summary>CDN provider: "cloudflare", "fastly", etc.</summary>
+    public string? Provider { get; set; }
+
+    /// <summary>Cloudflare Zone ID</summary>
+    public string? ZoneId { get; set; }
+
+    /// <summary>Whether to automatically purge channel.json on publish</summary>
+    public bool AutoPurge { get; set; } = true;
 }

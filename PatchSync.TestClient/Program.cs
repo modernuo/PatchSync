@@ -1,5 +1,14 @@
+using System.Security.Cryptography;
+using PatchSync.Common.Chunking;
+using PatchSync.Common.Signatures;
+using PatchSync.SDK.Assembly;
 using PatchSync.SDK.Client;
+using PatchSync.SDK.Containers;
+using PatchSync.SDK.Containers.Handlers;
+using PatchSync.SDK.Delta;
 using PatchSync.SDK.Engine;
+using PatchSync.SDK.Signatures;
+using PatchSync.SDK.Sources;
 using PatchSync.SDK.Storage;
 
 namespace PatchSync.TestClient;
@@ -25,6 +34,14 @@ class Program
         }
 
         var command = args[0].ToLowerInvariant();
+
+        // Handle compare-uop command
+        if (command == "compare-uop" && args.Length >= 3)
+        {
+            var oldFile = args[1];
+            var newFile = args[2];
+            return CompareUopEntries(oldFile, newFile);
+        }
 
         // Handle test-tar command (no required args)
         if (command == "test-tar")
@@ -98,6 +115,19 @@ class Program
         Console.WriteLine($"Local:  {localPath}");
         Console.WriteLine();
 
+        // Handle diag command (needs 4 args)
+        if (command == "diag")
+        {
+            if (args.Length < 4)
+            {
+                Console.WriteLine("Usage: PatchSync.TestClient diag <server-url> <local-path> <filename>");
+                Console.WriteLine("Example: PatchSync.TestClient diag https://cdn.example.com C:\\Game map2LegacyMUL.uop");
+                return 1;
+            }
+            var fileName = args[3];
+            return await RunDiagnosticAsync(baseUri, localPath, fileName);
+        }
+
         try
         {
             return command switch
@@ -132,6 +162,7 @@ class Program
         Console.WriteLine("  patch    Download and apply patches");
         Console.WriteLine("  verify   Verify all files match the manifest");
         Console.WriteLine("  full     Run scan, patch, and verify in sequence");
+        Console.WriteLine("  diag     Diagnostic: patch a single file with detailed output");
         Console.WriteLine("  analyze  Analyze delta between two local files");
         Console.WriteLine("  test-tar Test CDC behavior with TAR files");
         Console.WriteLine();
@@ -141,7 +172,330 @@ class Program
         Console.WriteLine("  PatchSync.TestClient full http://localhost:8080 C:\\Games\\MyGame");
         Console.WriteLine("  PatchSync.TestClient analyze <old-file> <new-file>");
         Console.WriteLine("  PatchSync.TestClient test-tar [output-dir]");
+        Console.WriteLine("  PatchSync.TestClient diag https://cdn.example.com C:\\Game map2LegacyMUL.uop");
         return 1;
+    }
+
+    static async Task<int> RunDiagnosticAsync(Uri baseUri, string localPath, string fileName)
+    {
+        Console.WriteLine($"=== DIAGNOSTIC: {fileName} ===");
+        Console.WriteLine();
+
+        using var storage = new HttpStorageProvider(baseUri);
+        using var client = new PatchSyncClient(storage);
+
+        // Step 1: Download manifest
+        Console.Write("1. Downloading manifest... ");
+        var manifest = await client.GetManifestAsync();
+        Console.WriteLine($"OK ({manifest.Files.Count} files)");
+
+        // Step 2: Find the file in manifest
+        var fileEntry = manifest.Files.FirstOrDefault(f =>
+            f.Path.Equals(fileName, StringComparison.OrdinalIgnoreCase));
+
+        if (fileEntry == null)
+        {
+            Console.WriteLine($"   ERROR: File '{fileName}' not found in manifest");
+            Console.WriteLine("   Available UOP files:");
+            foreach (var f in manifest.Files.Where(x => x.Path.EndsWith(".uop", StringComparison.OrdinalIgnoreCase)).Take(10))
+            {
+                Console.WriteLine($"     - {f.Path}");
+            }
+            return 1;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("2. File info from manifest:");
+        Console.WriteLine($"   Path:     {fileEntry.Path}");
+        Console.WriteLine($"   Size:     {FormatSize(fileEntry.Size)} ({fileEntry.Size:N0} bytes)");
+        Console.WriteLine($"   Hash:     {fileEntry.Hash}");
+        Console.WriteLine($"   Strategy: {fileEntry.Strategy}");
+        if (!string.IsNullOrEmpty(fileEntry.VirtualSignatureUrl))
+            Console.WriteLine($"   VSig URL: {fileEntry.VirtualSignatureUrl}");
+
+        // Step 3: Check local file
+        var localFilePath = Path.Combine(localPath, fileEntry.Path);
+        Console.WriteLine();
+        Console.WriteLine("3. Local file status:");
+        if (File.Exists(localFilePath))
+        {
+            var localInfo = new FileInfo(localFilePath);
+            Console.WriteLine($"   Path:   {localFilePath}");
+            Console.WriteLine($"   Size:   {FormatSize(localInfo.Length)} ({localInfo.Length:N0} bytes)");
+
+            // Compute hash
+            await using var fs = File.OpenRead(localFilePath);
+            var localHash = Convert.ToHexString(await SHA256.HashDataAsync(fs)).ToLowerInvariant();
+            Console.WriteLine($"   Hash:   {localHash}");
+            Console.WriteLine($"   Match:  {(localHash == fileEntry.Hash ? "YES (up to date)" : "NO (needs update)")}");
+
+            // Debug: show first 64 bytes of local file
+            fs.Position = 0;
+            var headerBytes = new byte[64];
+            await fs.ReadAsync(headerBytes);
+            Console.WriteLine($"   LocalFile[0:64]: {Convert.ToHexString(headerBytes)}");
+
+            // Parse UOP header
+            var nextBlockOffset = BitConverter.ToInt64(headerBytes, 12);
+            Console.WriteLine($"   NextBlockOffset (from header): {nextBlockOffset} (0x{nextBlockOffset:X})");
+        }
+        else
+        {
+            Console.WriteLine($"   File does not exist: {localFilePath}");
+        }
+
+        // Step 4: Download and parse virtual signature
+        if (string.IsNullOrEmpty(fileEntry.VirtualSignatureUrl))
+        {
+            Console.WriteLine();
+            Console.WriteLine("4. No virtual signature URL - cannot continue diagnostic");
+            return 1;
+        }
+
+        // Initialize container handler and chunker (used in multiple steps)
+        var handler = new UopHandler();
+        var chunker = new FastCDCChunker();
+        var options = new ChunkingOptions();
+
+        // Step 4: Download target signature from CDN
+        Console.WriteLine();
+        Console.Write("4. Downloading virtual signature from CDN... ");
+
+        await using var vsigStream = await storage.GetAsync(fileEntry.VirtualSignatureUrl);
+        var signature = VirtualSignatureFormat.Read(vsigStream);
+        Console.WriteLine("OK");
+
+        Console.WriteLine($"   Format:       {signature.ContainerFormat}");
+        Console.WriteLine($"   Total size:   {FormatSize(signature.TotalSize)} ({signature.TotalSize:N0} bytes)");
+        Console.WriteLine($"   Container hash: {Convert.ToHexString(signature.ContainerHash).ToLowerInvariant()}");
+        Console.WriteLine($"   Entry count:  {signature.Entries.Count}");
+        Console.WriteLine($"   HeaderTemplate size: {signature.Layout.HeaderTemplate.Length} bytes");
+
+        // Debug: show first 64 bytes of HeaderTemplate
+        Console.WriteLine($"   HeaderTemplate[0:64]: {Convert.ToHexString(signature.Layout.HeaderTemplate.Take(64).ToArray())}");
+
+        var entriesWithChunks = signature.Entries.Count(e => e.HasChunks);
+        Console.WriteLine($"   With CDC chunks: {entriesWithChunks}");
+
+        // Step 5: Build local source and calculate delta
+        Console.WriteLine();
+        Console.WriteLine("5. Building delta plan...");
+
+        var calculator = new VirtualDeltaCalculator();
+
+        VirtualContainerSource? localSource = null;
+        if (File.Exists(localFilePath))
+        {
+            Console.Write("   Building local container source... ");
+            localSource = VirtualContainerSource.Build(localFilePath, handler, chunker, options);
+            Console.WriteLine($"OK ({localSource.EntryCount} entries, {localSource.ChunkCount} chunks)");
+        }
+        else
+        {
+            Console.WriteLine("   No local file - will be full download");
+        }
+
+        var plan = calculator.Calculate(signature, localSource);
+
+        Console.WriteLine();
+        Console.WriteLine("6. Delta plan summary:");
+        Console.WriteLine($"   Total entries:    {plan.Entries.Count}");
+        Console.WriteLine($"   CopyLocal:        {plan.EntriesLocalMatch} entries");
+        Console.WriteLine($"   DeltaChunks:      {plan.EntriesDeltaChunks} entries");
+        Console.WriteLine($"   DownloadFull:     {plan.EntriesFullDownload} entries");
+        Console.WriteLine();
+        Console.WriteLine($"   Bytes to download: {FormatSize(plan.BytesToDownload)} ({plan.BytesToDownload:N0})");
+        Console.WriteLine($"   Bytes to copy:     {FormatSize(plan.BytesToCopy)} ({plan.BytesToCopy:N0})");
+        Console.WriteLine($"   Local reuse:       {plan.LocalReuseRatio:P1}");
+
+        // Show first few entries of each type
+        Console.WriteLine();
+        Console.WriteLine("7. Sample entries by method:");
+
+        var copyLocalEntries = plan.Entries.Where(e => e.Method == EntryMethod.CopyLocal).Take(3).ToList();
+        if (copyLocalEntries.Count > 0)
+        {
+            Console.WriteLine("   CopyLocal entries:");
+            foreach (var e in copyLocalEntries)
+            {
+                Console.WriteLine($"     [{e.EntryId}] offset={e.TargetOffset:N0} size={e.Size:N0} hdrSize={e.HeaderSize}");
+                Console.WriteLine($"       LocalSource: offset={e.LocalSource?.Offset:N0}");
+            }
+        }
+
+        var deltaEntries = plan.Entries.Where(e => e.Method == EntryMethod.DeltaChunks).Take(3).ToList();
+        if (deltaEntries.Count > 0)
+        {
+            Console.WriteLine("   DeltaChunks entries:");
+            foreach (var e in deltaEntries)
+            {
+                var localChunks = e.ChunkPlan?.Actions.OfType<CopyLocal>().Count() ?? 0;
+                var remoteChunks = e.ChunkPlan?.Actions.OfType<DownloadRemote>().Count() ?? 0;
+                Console.WriteLine($"     [{e.EntryId}] offset={e.TargetOffset:N0} size={e.Size:N0} hdrSize={e.HeaderSize}");
+                Console.WriteLine($"       Chunks: {localChunks} local, {remoteChunks} remote");
+            }
+        }
+
+        var downloadEntries = plan.Entries.Where(e => e.Method == EntryMethod.DownloadFull).Take(3).ToList();
+        if (downloadEntries.Count > 0)
+        {
+            Console.WriteLine("   DownloadFull entries:");
+            foreach (var e in downloadEntries)
+            {
+                Console.WriteLine($"     [{e.EntryId}] offset={e.TargetOffset:N0} size={e.Size:N0} hdrSize={e.HeaderSize}");
+            }
+        }
+
+        // Step 8: Assemble the file
+        Console.WriteLine();
+        Console.WriteLine("8. Assembling file...");
+
+        var targetPath = localFilePath + ".diag";
+        var remotePath = fileEntry.Path; // Relative path for CDN
+
+        var assemblyOptions = new AssemblyOptions
+        {
+            PreserveTempOnFailure = true,
+            SkipVerification = true // We'll verify manually for better diagnostics
+        };
+        var assembler = new ContainerAssembler(storage, assemblyOptions);
+
+        var progress = new Progress<ContainerAssemblyProgress>(p =>
+        {
+            var pct = p.Percentage * 100;
+            Console.Write($"\r   Phase: {p.Phase,-12} | {pct,5:F1}% | {FormatSize(p.BytesDownloaded)}↓ {FormatSize(p.BytesCopied)}↔ | Entry {p.EntriesComplete}/{p.EntriesTotal}".PadRight(100));
+        });
+
+        try
+        {
+            await assembler.AssembleAsync(
+                targetPath,
+                remotePath,
+                plan,
+                File.Exists(localFilePath) ? localFilePath : null,
+                progress);
+
+            Console.WriteLine();
+            Console.WriteLine("   Assembly completed!");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"   Assembly exception: {ex.Message}");
+            return 1;
+        }
+
+        // Step 9: Verify the assembled file
+        Console.WriteLine();
+        Console.WriteLine("9. Verifying assembled file...");
+
+        var diagInfo = new FileInfo(targetPath);
+        Console.WriteLine($"   File size: {FormatSize(diagInfo.Length)} ({diagInfo.Length:N0} bytes)");
+        Console.WriteLine($"   Expected:  {FormatSize(fileEntry.Size)} ({fileEntry.Size:N0} bytes)");
+
+        await using var diagFs = File.OpenRead(targetPath);
+        var diagHash = Convert.ToHexString(await SHA256.HashDataAsync(diagFs)).ToLowerInvariant();
+        Console.WriteLine($"   Hash:     {diagHash}");
+        Console.WriteLine($"   Expected: {fileEntry.Hash}");
+
+        var hashMatch = diagHash == fileEntry.Hash;
+        Console.WriteLine($"   Match:    {(hashMatch ? "YES - SUCCESS!" : "NO - MISMATCH")}");
+
+        if (!hashMatch)
+        {
+            // Find first differing byte
+            Console.WriteLine();
+            Console.WriteLine("10. Finding first byte difference...");
+
+            diagFs.Position = 0;
+            await using var expectedFs = await storage.GetAsync(remotePath);
+
+            var buffer1 = new byte[65536];
+            var buffer2 = new byte[65536];
+            long offset = 0;
+            bool foundDiff = false;
+            int diffCount = 0;
+
+            while (!foundDiff || diffCount < 5)
+            {
+                var read1 = await diagFs.ReadAsync(buffer1);
+                var read2 = await expectedFs.ReadAsync(buffer2.AsMemory(0, read1));
+
+                if (read1 == 0) break;
+
+                for (int i = 0; i < read1; i++)
+                {
+                    if (buffer1[i] != buffer2[i])
+                    {
+                        diffCount++;
+                        if (diffCount <= 5)
+                        {
+                            var diffOffset = offset + i;
+                            Console.WriteLine($"   Diff #{diffCount} at offset {diffOffset:N0} (0x{diffOffset:X})");
+                            Console.WriteLine($"     Got: 0x{buffer1[i]:X2}, Expected: 0x{buffer2[i]:X2}");
+
+                            // Find which entry this belongs to
+                            var entry = plan.Entries.FirstOrDefault(e =>
+                                diffOffset >= e.HeaderOffset && diffOffset < e.HeaderOffset + e.TotalSize);
+
+                            if (entry != null)
+                            {
+                                Console.WriteLine($"     Entry: [{entry.EntryId}] method={entry.Method}");
+                                Console.WriteLine($"       HeaderOffset: {entry.HeaderOffset:N0}, TargetOffset: {entry.TargetOffset:N0}");
+                                Console.WriteLine($"       HeaderSize: {entry.HeaderSize}, Size: {entry.Size:N0}");
+
+                                var relativeOffset = diffOffset - entry.HeaderOffset;
+                                if (relativeOffset < entry.HeaderSize)
+                                {
+                                    Console.WriteLine($"       Diff is in HEADER (relative offset {relativeOffset})");
+                                }
+                                else
+                                {
+                                    Console.WriteLine($"       Diff is in DATA (relative offset {relativeOffset - entry.HeaderSize})");
+                                }
+
+                                if (entry.LocalSource.HasValue)
+                                {
+                                    Console.WriteLine($"       LocalSource.Offset: {entry.LocalSource.Value.Offset:N0}");
+                                }
+                            }
+                            else
+                            {
+                                Console.WriteLine($"     Not in any entry - likely container header/block table");
+                            }
+                        }
+
+                        if (!foundDiff) foundDiff = true;
+                    }
+                }
+
+                offset += read1;
+            }
+
+            if (diffCount > 5)
+            {
+                Console.WriteLine($"   ... and {diffCount - 5} more differences");
+            }
+
+            if (!foundDiff)
+            {
+                Console.WriteLine("   No byte differences found (size mismatch?)");
+            }
+
+            // Keep the file for manual inspection
+            Console.WriteLine();
+            Console.WriteLine($"   Keeping diagnostic file for inspection: {targetPath}");
+            return 1;
+        }
+
+        // Clean up on success - close file handle first
+        await diagFs.DisposeAsync();
+        Console.WriteLine();
+        Console.Write("10. Cleaning up diagnostic file... ");
+        File.Delete(targetPath);
+        Console.WriteLine("OK");
+
+        return 0;
     }
 
     static async Task<int> RunScanAsync(Uri baseUri, string localPath)
@@ -526,5 +880,81 @@ class Program
     {
         if (path.Length <= maxLength) return path;
         return "..." + path[^(maxLength - 3)..];
+    }
+
+    static int CompareUopEntries(string oldFile, string newFile)
+    {
+        Console.WriteLine($"Comparing UOP entries:");
+        Console.WriteLine($"  Old: {oldFile}");
+        Console.WriteLine($"  New: {newFile}");
+        Console.WriteLine();
+
+        var handler = new UopHandler();
+
+        using var oldStream = File.OpenRead(oldFile);
+        using var newStream = File.OpenRead(newFile);
+
+        var oldInfo = handler.Parse(oldStream);
+        var newInfo = handler.Parse(newStream);
+
+        Console.WriteLine($"Old file: {oldInfo.Entries.Count} entries, {FormatSize(oldInfo.TotalSize)}");
+        Console.WriteLine($"New file: {newInfo.Entries.Count} entries, {FormatSize(newInfo.TotalSize)}");
+        Console.WriteLine();
+
+        // Build lookup by entry ID
+        var oldEntries = oldInfo.Entries.ToDictionary(e => e.EntryId);
+        var newEntries = newInfo.Entries.ToDictionary(e => e.EntryId);
+
+        var onlyInOld = oldEntries.Keys.Except(newEntries.Keys).ToList();
+        var onlyInNew = newEntries.Keys.Except(oldEntries.Keys).ToList();
+        var inBoth = oldEntries.Keys.Intersect(newEntries.Keys).ToList();
+
+        Console.WriteLine($"Entries only in OLD: {onlyInOld.Count}");
+        Console.WriteLine($"Entries only in NEW: {onlyInNew.Count}");
+        Console.WriteLine($"Entries in BOTH: {inBoth.Count}");
+        Console.WriteLine();
+
+        // Compare entries that exist in both
+        int sameSize = 0, diffSize = 0;
+        int sameDecomp = 0, diffDecomp = 0;
+        var sizeDiffs = new List<(string Id, int OldSize, int NewSize, int OldDecomp, int NewDecomp)>();
+
+        foreach (var id in inBoth)
+        {
+            var old = oldEntries[id];
+            var @new = newEntries[id];
+
+            if (old.StoredSize == @new.StoredSize)
+                sameSize++;
+            else
+            {
+                diffSize++;
+                sizeDiffs.Add((id, old.StoredSize, @new.StoredSize, old.DecompressedSize, @new.DecompressedSize));
+            }
+
+            if (old.DecompressedSize == @new.DecompressedSize)
+                sameDecomp++;
+            else
+                diffDecomp++;
+        }
+
+        Console.WriteLine($"Same stored size: {sameSize}");
+        Console.WriteLine($"Different stored size: {diffSize}");
+        Console.WriteLine($"Same decompressed size: {sameDecomp}");
+        Console.WriteLine($"Different decompressed size: {diffDecomp}");
+        Console.WriteLine();
+
+        if (sizeDiffs.Count > 0)
+        {
+            Console.WriteLine($"Sample entries with different sizes (first 10):");
+            foreach (var (id, oldSize, newSize, oldDecomp, newDecomp) in sizeDiffs.Take(10))
+            {
+                Console.WriteLine($"  [{id}]");
+                Console.WriteLine($"    Stored: {oldSize} → {newSize} (diff: {newSize - oldSize:+#;-#;0})");
+                Console.WriteLine($"    Decomp: {oldDecomp} → {newDecomp} (diff: {newDecomp - oldDecomp:+#;-#;0})");
+            }
+        }
+
+        return 0;
     }
 }

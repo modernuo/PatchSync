@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using PatchSync.CLI.Cdn;
 
 namespace PatchSync.CLI.Workspace;
 
@@ -15,12 +16,14 @@ namespace PatchSync.CLI.Workspace;
 [JsonSerializable(typeof(ChannelConfig))]
 [JsonSerializable(typeof(ChannelPublishConfig))]
 [JsonSerializable(typeof(PublishProfile))]
+[JsonSerializable(typeof(CdnConfig))]
 [JsonSerializable(typeof(VersionMetadata))]
 [JsonSerializable(typeof(BuildInfo))]
 [JsonSerializable(typeof(InputInfo))]
 [JsonSerializable(typeof(OutputInfo))]
 [JsonSerializable(typeof(ChunkingInfo))]
 [JsonSerializable(typeof(PublishInfo))]
+[JsonSerializable(typeof(UploadedFile))]
 [JsonSerializable(typeof(ComparisonInfo))]
 [JsonSerializable(typeof(ChannelState))]
 [JsonSerializable(typeof(CurrentVersionInfo))]
@@ -29,9 +32,13 @@ namespace PatchSync.CLI.Workspace;
 [JsonSerializable(typeof(ActiveBuildInfo))]
 [JsonSerializable(typeof(PendingPublishInfo))]
 [JsonSerializable(typeof(RecentOperationInfo))]
+[JsonSerializable(typeof(ChannelJson))]
+[JsonSerializable(typeof(ChannelVersionInfo))]
 [JsonSerializable(typeof(Dictionary<string, ChannelConfig>))]
 [JsonSerializable(typeof(Dictionary<string, PublishProfile>))]
 [JsonSerializable(typeof(List<string>))]
+[JsonSerializable(typeof(List<UploadedFile>))]
+[JsonSerializable(typeof(List<ChannelVersionInfo>))]
 [JsonSerializable(typeof(List<VersionHistoryEntry>))]
 [JsonSerializable(typeof(List<ActiveBuildInfo>))]
 [JsonSerializable(typeof(List<PendingPublishInfo>))]

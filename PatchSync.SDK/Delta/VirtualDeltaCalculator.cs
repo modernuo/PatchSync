@@ -51,19 +51,19 @@ public sealed class EntryPlan
     /// <summary>Offset where header starts (TargetOffset - HeaderSize).</summary>
     public long HeaderOffset => TargetOffset - HeaderSize;
 
-    /// <summary>Bytes to download for this entry (includes header for full downloads).</summary>
+    /// <summary>Bytes to download for this entry.</summary>
     public long BytesToDownload => Method switch
     {
-        EntryMethod.CopyLocal => 0,
+        EntryMethod.CopyLocal => HeaderSize, // Header downloaded, data copied
         EntryMethod.DownloadFull => TotalSize, // Header + data
         EntryMethod.DeltaChunks => HeaderSize + (ChunkPlan?.BytesToDownload ?? Size), // Header + delta chunks
         _ => TotalSize
     };
 
-    /// <summary>Bytes to copy locally for this entry (includes header for full copies).</summary>
+    /// <summary>Bytes to copy locally for this entry.</summary>
     public long BytesToCopy => Method switch
     {
-        EntryMethod.CopyLocal => TotalSize, // Header + data
+        EntryMethod.CopyLocal => Size, // Only data copied (header is downloaded)
         EntryMethod.DownloadFull => 0,
         EntryMethod.DeltaChunks => ChunkPlan?.BytesToCopy ?? 0, // Only data chunks, header is downloaded
         _ => 0

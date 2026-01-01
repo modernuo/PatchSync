@@ -380,6 +380,7 @@ public sealed class S3Client : IDisposable
         {
             ".json" => "application/json",
             ".sig" => "application/octet-stream",
+            ".vsig" => "application/octet-stream",
             ".exe" => "application/octet-stream",
             ".dll" => "application/octet-stream",
             ".zip" => "application/zip",
@@ -401,10 +402,169 @@ public sealed class S3Client : IDisposable
         };
     }
 
+    /// <summary>
+    /// Checks if an object exists at the specified path.
+    /// </summary>
+    public async Task<bool> ObjectExistsAsync(string path, CancellationToken cancellationToken = default)
+    {
+        var info = await GetObjectInfoAsync(path, cancellationToken);
+        return info != null;
+    }
+
+    /// <summary>
+    /// Gets information about an object (ETag, size, last modified).
+    /// Returns null if the object does not exist.
+    /// </summary>
+    public async Task<S3ObjectInfo?> GetObjectInfoAsync(string path, CancellationToken cancellationToken = default)
+    {
+        path = NormalizePath(path);
+        var uri = BuildUri(path);
+        var request = CreateSignedRequest(HttpMethod.Head, uri, null);
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+            return null;
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new HttpRequestException($"S3 HEAD request failed: {response.StatusCode} - {body}");
+        }
+
+        var etag = response.Headers.ETag?.Tag?.Trim('"') ?? "";
+        var size = response.Content.Headers.ContentLength ?? 0;
+        var lastModified = response.Content.Headers.LastModified?.UtcDateTime ?? DateTime.UtcNow;
+
+        return new S3ObjectInfo
+        {
+            Key = path,
+            Size = size,
+            ETag = etag,
+            LastModified = lastModified
+        };
+    }
+
+    /// <summary>
+    /// Lists objects with the specified prefix.
+    /// </summary>
+    public async Task<List<S3ObjectInfo>> ListObjectsAsync(
+        string prefix,
+        CancellationToken cancellationToken = default)
+    {
+        prefix = NormalizePath(prefix);
+        var results = new List<S3ObjectInfo>();
+        string? continuationToken = null;
+
+        do
+        {
+            var query = $"list-type=2&prefix={Uri.EscapeDataString(prefix)}";
+            if (continuationToken != null)
+                query += $"&continuation-token={Uri.EscapeDataString(continuationToken)}";
+
+            var uri = BuildUri($"?{query}");
+            var request = CreateSignedRequest(HttpMethod.Get, uri, null);
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            await EnsureSuccessAsync(response);
+
+            var xml = await response.Content.ReadAsStringAsync(cancellationToken);
+            var doc = XDocument.Parse(xml);
+            var ns = doc.Root?.Name.Namespace ?? XNamespace.None;
+
+            foreach (var content in doc.Descendants(ns + "Contents"))
+            {
+                var key = content.Element(ns + "Key")?.Value ?? "";
+                var sizeStr = content.Element(ns + "Size")?.Value ?? "0";
+                var etag = content.Element(ns + "ETag")?.Value?.Trim('"') ?? "";
+                var lastModStr = content.Element(ns + "LastModified")?.Value;
+
+                results.Add(new S3ObjectInfo
+                {
+                    Key = key,
+                    Size = long.Parse(sizeStr),
+                    ETag = etag,
+                    LastModified = lastModStr != null ? DateTime.Parse(lastModStr) : DateTime.UtcNow
+                });
+            }
+
+            var isTruncated = doc.Descendants(ns + "IsTruncated").FirstOrDefault()?.Value == "true";
+            continuationToken = isTruncated
+                ? doc.Descendants(ns + "NextContinuationToken").FirstOrDefault()?.Value
+                : null;
+
+        } while (continuationToken != null);
+
+        return results;
+    }
+
+    /// <summary>
+    /// Deletes multiple objects from S3.
+    /// </summary>
+    public async Task DeleteObjectsAsync(
+        IEnumerable<string> keys,
+        CancellationToken cancellationToken = default)
+    {
+        var keyList = keys.Select(k => NormalizePath(k)).ToList();
+        if (keyList.Count == 0)
+            return;
+
+        // S3 allows up to 1000 objects per delete request
+        const int batchSize = 1000;
+
+        foreach (var batch in keyList.Chunk(batchSize))
+        {
+            var deleteXml = new XElement("Delete",
+                batch.Select(key => new XElement("Object",
+                    new XElement("Key", key))));
+
+            var content = new StringContent(deleteXml.ToString(), Encoding.UTF8, "application/xml");
+
+            // Delete request requires ?delete query parameter
+            var uri = BuildUri("?delete");
+            var request = CreateSignedRequest(HttpMethod.Post, uri, content);
+
+            // Calculate MD5 for delete request body
+            var bodyBytes = Encoding.UTF8.GetBytes(deleteXml.ToString());
+            var md5 = Convert.ToBase64String(MD5.HashData(bodyBytes));
+            request.Content!.Headers.Add("Content-MD5", md5);
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            await EnsureSuccessAsync(response);
+        }
+    }
+
+    /// <summary>
+    /// Deletes a single object from S3.
+    /// </summary>
+    public async Task DeleteObjectAsync(string path, CancellationToken cancellationToken = default)
+    {
+        path = NormalizePath(path);
+        var uri = BuildUri(path);
+        var request = CreateSignedRequest(HttpMethod.Delete, uri, null);
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+
+        // 404 is acceptable - object already doesn't exist
+        if (response.StatusCode != HttpStatusCode.NotFound)
+            await EnsureSuccessAsync(response);
+    }
+
     public void Dispose()
     {
         _httpClient.Dispose();
     }
+}
+
+/// <summary>
+/// Information about an S3 object.
+/// </summary>
+public sealed class S3ObjectInfo
+{
+    public required string Key { get; init; }
+    public required long Size { get; init; }
+    public required string ETag { get; init; }
+    public required DateTime LastModified { get; init; }
 }
 
 /// <summary>

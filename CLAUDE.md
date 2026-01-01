@@ -10,12 +10,14 @@ PatchSync is a .NET File Patching and Upload SDK & CLI for efficient software pa
 
 ## Important Documentation
 
-Before making changes, review these documents:
+Before making changes, review these developer documents:
 
-- **[docs/ANALYSIS.md](docs/ANALYSIS.md)** - Deep technical analysis of the approach
-- **[docs/DECISIONS.md](docs/DECISIONS.md)** - Key architectural decisions and rationale
-- **[docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)** - Green field implementation roadmap
-- **[docs/SIMILAR_TOOLS_RESEARCH.md](docs/SIMILAR_TOOLS_RESEARCH.md)** - Research on zsync, casync, desync, etc.
+- **[dev-docs/ANALYSIS.md](dev-docs/ANALYSIS.md)** - Deep technical analysis of the approach
+- **[dev-docs/DECISIONS.md](dev-docs/DECISIONS.md)** - Key architectural decisions and rationale
+- **[dev-docs/IMPLEMENTATION_PLAN.md](dev-docs/IMPLEMENTATION_PLAN.md)** - Green field implementation roadmap
+- **[dev-docs/SIMILAR_TOOLS_RESEARCH.md](dev-docs/SIMILAR_TOOLS_RESEARCH.md)** - Research on zsync, casync, desync, etc.
+
+User-facing documentation is in the **[docs/](docs/)** folder.
 
 **NOTE**: The current codebase is a prototype/guide. We are operating as **green field** - use the existing code for reference but implement fresh based on the architecture decisions.
 

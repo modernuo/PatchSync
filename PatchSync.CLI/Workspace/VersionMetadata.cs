@@ -164,14 +164,41 @@ public sealed class PublishInfo
     /// <summary>Public URL to the manifest</summary>
     public string? ManifestUrl { get; set; }
 
-    /// <summary>Files that have been uploaded (for resume support)</summary>
-    public List<string>? UploadedFiles { get; set; }
+    /// <summary>S3 path prefix for this version (e.g., "prod/versions/1.0.0")</summary>
+    public string? RemotePath { get; set; }
+
+    /// <summary>Files that have been uploaded with details for resume/verification</summary>
+    public List<UploadedFile>? Files { get; set; }
+
+    /// <summary>Total bytes that need to be uploaded</summary>
+    public long TotalBytes { get; set; }
 
     /// <summary>Total bytes uploaded so far</summary>
     public long UploadedBytes { get; set; }
 
     /// <summary>When the last upload occurred (for resume)</summary>
     public DateTime? LastUploadAt { get; set; }
+
+    /// <summary>ETag of channel.json after last publish (for cache invalidation tracking)</summary>
+    public string? ChannelJsonETag { get; set; }
+}
+
+/// <summary>
+/// Information about an uploaded file
+/// </summary>
+public sealed class UploadedFile
+{
+    /// <summary>Local path relative to version directory</summary>
+    public required string LocalPath { get; set; }
+
+    /// <summary>Remote S3 key</summary>
+    public required string RemoteKey { get; set; }
+
+    /// <summary>S3 ETag for verification</summary>
+    public required string ETag { get; set; }
+
+    /// <summary>File size in bytes</summary>
+    public long Size { get; set; }
 }
 
 /// <summary>

@@ -146,16 +146,19 @@ public sealed class ContainerAssembler
                     await localContainer.DisposeAsync();
             }
 
-            // Verify final hash
-            progressState.SetPhase(ContainerAssemblyPhase.Verifying);
-            targetStream.Position = 0;
-            var actualHash = await ComputeHashAsync(targetStream, cancellationToken);
-            var expectedHash = Convert.ToHexString(plan.Signature.ContainerHash).ToLowerInvariant();
-
-            if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            // Verify final hash (unless skipped for debugging)
+            if (!_options.SkipVerification)
             {
-                throw new InvalidDataException(
-                    $"Container hash mismatch after assembly. Expected: {expectedHash}, Actual: {actualHash}");
+                progressState.SetPhase(ContainerAssemblyPhase.Verifying);
+                targetStream.Position = 0;
+                var actualHash = await ComputeHashAsync(targetStream, cancellationToken);
+                var expectedHash = Convert.ToHexString(plan.Signature.ContainerHash).ToLowerInvariant();
+
+                if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException(
+                        $"Container hash mismatch after assembly. Expected: {expectedHash}, Actual: {actualHash}");
+                }
             }
 
             // Close stream before rename
@@ -170,8 +173,11 @@ public sealed class ContainerAssembler
         }
         catch
         {
-            // Clean up temp file on failure
-            try { File.Delete(tempPath); } catch { }
+            // Clean up temp file on failure (unless preserving for debug)
+            if (!_options.PreserveTempOnFailure)
+            {
+                try { File.Delete(tempPath); } catch { }
+            }
             throw;
         }
     }
@@ -190,6 +196,15 @@ public sealed class ContainerAssembler
                 case EntryMethod.DownloadFull:
                     // Download header + data together
                     ranges.Add(new ByteRange(entry.HeaderOffset, entry.TotalSize));
+                    break;
+
+                case EntryMethod.CopyLocal:
+                    // Download only the header from remote (data is copied from local)
+                    // Headers contain position-specific data that differs between source and target
+                    if (entry.HeaderSize > 0)
+                    {
+                        ranges.Add(new ByteRange(entry.HeaderOffset, entry.HeaderSize));
+                    }
                     break;
 
                 case EntryMethod.DeltaChunks when entry.ChunkPlan != null:
@@ -222,15 +237,15 @@ public sealed class ContainerAssembler
     {
         var source = entry.LocalSource!.Value;
 
-        // Copy header + data together (header is at source.Offset - entry.HeaderSize)
-        var sourceOffset = source.Offset - entry.HeaderSize;
-        var totalSize = entry.TotalSize; // HeaderSize + Size
+        // Copy only the DATA portion from local (header is downloaded from remote)
+        // Headers contain position-specific data that differs between source and target
+        var dataSize = entry.Size; // Just the data, not including header
 
-        target.Position = entry.HeaderOffset; // Start at header position
-        localContainer.Position = sourceOffset;
+        target.Position = entry.TargetOffset; // Start at data position (after header)
+        localContainer.Position = source.Offset; // source.Offset points to data, not header
 
-        var buffer = new byte[Math.Min(totalSize, _options.BufferSize)];
-        int remaining = totalSize;
+        var buffer = new byte[Math.Min(dataSize, _options.BufferSize)];
+        int remaining = dataSize;
 
         while (remaining > 0)
         {
@@ -296,7 +311,7 @@ public sealed class ContainerAssembler
     {
         using var templateStream = new MemoryStream(layout.HeaderTemplate);
 
-        // UOP format: [FileHeader: 28][BlockCount: 4][BlockOffset: 8 + BlockData: N]...
+        // UOP format: [FileHeader: 28][PreEntryGapLen: 4][PreEntryGap: N][BlockCount: 4][BlockOffset: 8 + BlockData: N]...
         if (containerFormat == "uop-v1")
         {
             const int UopHeaderSize = 28;
@@ -307,6 +322,19 @@ public sealed class ContainerAssembler
             templateStream.ReadExactly(fileHeader);
             output.Position = 0;
             output.Write(fileHeader);
+
+            // Read and write pre-entry gap
+            Span<byte> gapLenBuffer = stackalloc byte[4];
+            templateStream.ReadExactly(gapLenBuffer);
+            int preEntryGapLen = BinaryPrimitives.ReadInt32LittleEndian(gapLenBuffer);
+
+            if (preEntryGapLen > 0)
+            {
+                var gapData = new byte[preEntryGapLen];
+                templateStream.ReadExactly(gapData);
+                output.Position = UopHeaderSize;
+                output.Write(gapData);
+            }
 
             // Read block count
             Span<byte> countBuffer = stackalloc byte[4];

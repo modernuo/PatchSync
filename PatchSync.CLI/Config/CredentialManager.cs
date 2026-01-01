@@ -263,6 +263,9 @@ public sealed class S3Credentials
     public string? SecretKey { get; set; }
     public string? Prefix { get; set; }
     public string? PublicUrl { get; set; }
+
+    /// <summary>Cloudflare API token for cache purging</summary>
+    public string? CloudflareToken { get; set; }
 }
 
 /// <summary>

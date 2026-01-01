@@ -251,11 +251,12 @@ public class VirtualDeltaTests : IDisposable
         var localMatchCount = plan.Entries.Count(e => e.Method == EntryMethod.CopyLocal);
         Assert.Equal(plan.Entries.Count, localMatchCount);
 
-        // No bytes should need downloading
-        Assert.Equal(0, plan.BytesToDownload);
+        // CopyLocal downloads headers from remote (they contain position-specific data)
+        var expectedDownload = plan.Entries.Sum(e => (long)e.HeaderSize);
+        Assert.Equal(expectedDownload, plan.BytesToDownload);
 
-        // BytesToCopy includes header + data for each entry
-        var expectedCopy = plan.Entries.Sum(e => (long)e.TotalSize);
+        // BytesToCopy is only data for CopyLocal entries (header is downloaded)
+        var expectedCopy = plan.Entries.Sum(e => (long)e.Size);
         Assert.Equal(expectedCopy, plan.BytesToCopy);
 
         // LocalReuseRatio is BytesToCopy/TotalSize, which will be <1.0 due to container overhead
