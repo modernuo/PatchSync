@@ -273,95 +273,98 @@ class Program
         var startTime = DateTime.UtcNow;
         var lastReportTime = DateTime.UtcNow;
         var lastPhase = PatchPhase.Starting;
-        var lastCurrentFile = "";
+        var consoleLock = new object();
 
         // Create progress handler
         var progress = new Progress<PatchProgress>(p =>
         {
             var now = DateTime.UtcNow;
 
-            // Always report phase changes
-            if (p.Phase != lastPhase)
+            lock (consoleLock)
             {
-                if (lastPhase == PatchPhase.Processing || lastPhase == PatchPhase.Verifying)
+                // Always report phase changes
+                if (p.Phase != lastPhase)
                 {
-                    Console.WriteLine(); // Clear line after progress bar
+                    if (lastPhase == PatchPhase.Processing || lastPhase == PatchPhase.Verifying)
+                    {
+                        Console.WriteLine(); // Clear line after progress bar
+                    }
+
+                    lastPhase = p.Phase;
+                    Console.WriteLine();
+
+                    switch (p.Phase)
+                    {
+                        case PatchPhase.Starting:
+                            Console.WriteLine($"[PLAN] Calculating delta plans for {p.FilesTotal} files...");
+                            break;
+                        case PatchPhase.Processing:
+                            Console.WriteLine($"[ASSEMBLE] Downloading and assembling files...");
+                            break;
+                        case PatchPhase.Verifying:
+                            Console.WriteLine($"[VERIFY] Verifying file integrity...");
+                            break;
+                    }
                 }
 
-                lastPhase = p.Phase;
-                Console.WriteLine();
+                // Log file completions (contains timing info)
+                if (p.CurrentFile != null && p.CurrentFile.StartsWith("Completed:"))
+                {
+                    Console.WriteLine($"  {p.CurrentFile}");
+                    return; // Don't update progress bar after completion message
+                }
+
+                if ((now - lastReportTime).TotalMilliseconds < 100 && p.Phase != PatchPhase.Complete)
+                    return;
+                lastReportTime = now;
+
+                var elapsed = now - startTime;
+                var speed = elapsed.TotalSeconds > 0 ? p.BytesComplete / elapsed.TotalSeconds : 0;
 
                 switch (p.Phase)
                 {
                     case PatchPhase.Starting:
-                        Console.WriteLine($"[PLAN] Calculating delta plans for {p.FilesTotal} files...");
+                        if (p.CurrentFile != null)
+                        {
+                            var planPct = p.FilesTotal > 0 ? (double)p.FilesComplete / p.FilesTotal * 100 : 0;
+                            Console.Write($"\r  Planning: {p.FilesComplete}/{p.FilesTotal} ({planPct:F0}%) - {TruncatePath(p.CurrentFile, 35)}".PadRight(80));
+                        }
                         break;
+
                     case PatchPhase.Processing:
-                        Console.WriteLine($"[ASSEMBLE] Downloading and assembling files...");
+                        // Use file-based percentage for more accurate progress (byte totals can exceed estimates)
+                        var filePct = p.FilesTotal > 0 ? (double)p.FilesComplete / p.FilesTotal : 0;
+                        var bar = BuildProgressBar(filePct, 20);
+                        var fileInfo = p.CurrentFile != null ? TruncatePath(p.CurrentFile, 20) : "";
+                        Console.Write($"\r  {bar} {filePct * 100,5:F1}% | {FormatSize((long)speed)}/s | {FormatSize(p.BytesDownloaded)}↓ {FormatSize(p.BytesCopied)}↔ | {p.FilesComplete}/{p.FilesTotal} | {fileInfo}".PadRight(110));
                         break;
+
                     case PatchPhase.Verifying:
-                        Console.WriteLine($"[VERIFY] Verifying file integrity...");
+                        var verifyPct = p.FilesTotal > 0 ? (double)p.FilesComplete / p.FilesTotal * 100 : 0;
+                        Console.Write($"\r  Verified: {p.FilesComplete}/{p.FilesTotal} ({verifyPct:F0}%)".PadRight(60));
+                        break;
+
+                    case PatchPhase.Complete:
+                        Console.WriteLine();
+                        Console.WriteLine();
+                        Console.WriteLine("[COMMIT] Changes applied successfully!");
+                        Console.WriteLine();
+                        Console.WriteLine($"Patch complete!");
+                        Console.WriteLine($"  Files processed: {p.FilesComplete}");
+                        Console.WriteLine($"  Time elapsed:    {elapsed:mm\\:ss\\.f}");
+                        Console.WriteLine($"  Average speed:   {FormatSize((long)speed)}/s");
+                        Console.WriteLine();
+                        Console.WriteLine("Download statistics:");
+                        Console.WriteLine($"  Downloaded:      {FormatSize(p.BytesDownloaded)}");
+                        Console.WriteLine($"  Copied locally:  {FormatSize(p.BytesCopied)}");
+                        Console.WriteLine($"  Total processed: {FormatSize(p.BytesComplete)}");
+                        if (p.BytesComplete > 0)
+                        {
+                            Console.WriteLine($"  Local reuse:     {p.LocalReusePercentage:P1}");
+                            Console.WriteLine($"  Bandwidth saved: {FormatSize(p.BytesSaved)}");
+                        }
                         break;
                 }
-            }
-
-            // Log file completions (contains timing info)
-            if (p.CurrentFile != null && p.CurrentFile.StartsWith("Completed:") && p.CurrentFile != lastCurrentFile)
-            {
-                lastCurrentFile = p.CurrentFile;
-                Console.WriteLine($"\r  {p.CurrentFile}".PadRight(80));
-            }
-
-            if ((now - lastReportTime).TotalMilliseconds < 100 && p.Phase != PatchPhase.Complete)
-                return;
-            lastReportTime = now;
-
-            var elapsed = now - startTime;
-            var speed = elapsed.TotalSeconds > 0 ? p.BytesComplete / elapsed.TotalSeconds : 0;
-
-            switch (p.Phase)
-            {
-                case PatchPhase.Starting:
-                    if (p.CurrentFile != null)
-                    {
-                        Console.Write($"\r  Planning: {p.FilesComplete}/{p.FilesTotal} - {TruncatePath(p.CurrentFile, 40)}".PadRight(80));
-                    }
-                    break;
-
-                case PatchPhase.Processing:
-                    var pct = p.OverallPercentage * 100;
-                    var bar = BuildProgressBar(p.OverallPercentage, 20);
-                    var fileInfo = p.CurrentFile != null && !p.CurrentFile.StartsWith("Completed:")
-                        ? TruncatePath(p.CurrentFile, 20)
-                        : "";
-                    Console.Write($"\r  {bar} {pct,5:F1}% | {FormatSize((long)speed)}/s | {FormatSize(p.BytesDownloaded)}↓ {FormatSize(p.BytesCopied)}↔ | {p.FilesComplete}/{p.FilesTotal} | {fileInfo}".PadRight(110));
-                    break;
-
-                case PatchPhase.Verifying:
-                    var verifyPct = p.FilesTotal > 0 ? (double)p.FilesComplete / p.FilesTotal * 100 : 0;
-                    Console.Write($"\r  Verified: {p.FilesComplete}/{p.FilesTotal} ({verifyPct:F0}%)".PadRight(60));
-                    break;
-
-                case PatchPhase.Complete:
-                    Console.WriteLine();
-                    Console.WriteLine();
-                    Console.WriteLine("[COMMIT] Changes applied successfully!");
-                    Console.WriteLine();
-                    Console.WriteLine($"Patch complete!");
-                    Console.WriteLine($"  Files processed: {p.FilesComplete}");
-                    Console.WriteLine($"  Time elapsed:    {elapsed:mm\\:ss\\.f}");
-                    Console.WriteLine($"  Average speed:   {FormatSize((long)speed)}/s");
-                    Console.WriteLine();
-                    Console.WriteLine("Download statistics:");
-                    Console.WriteLine($"  Downloaded:      {FormatSize(p.BytesDownloaded)}");
-                    Console.WriteLine($"  Copied locally:  {FormatSize(p.BytesCopied)}");
-                    Console.WriteLine($"  Total processed: {FormatSize(p.BytesComplete)}");
-                    if (p.BytesComplete > 0)
-                    {
-                        Console.WriteLine($"  Local reuse:     {p.LocalReusePercentage:P1}");
-                        Console.WriteLine($"  Bandwidth saved: {FormatSize(p.BytesSaved)}");
-                    }
-                    break;
             }
         });
 

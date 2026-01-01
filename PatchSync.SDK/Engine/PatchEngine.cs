@@ -143,6 +143,11 @@ public sealed class PatchEngine : IDisposable
             if (file.Strategy == UpdateStrategy.CreateOnly && File.Exists(localFilePath))
             {
                 scanned++;
+                progress?.Report(new PatchEngineProgress(
+                    PatchEnginePhase.Planning,
+                    scanned, files.Count,
+                    0, 0, 0, 0,
+                    file.Path));
                 continue; // File exists, don't overwrite
             }
 
@@ -153,6 +158,11 @@ public sealed class PatchEngine : IDisposable
                 if (string.Equals(localHash, file.Hash, StringComparison.OrdinalIgnoreCase))
                 {
                     scanned++;
+                    progress?.Report(new PatchEngineProgress(
+                        PatchEnginePhase.Planning,
+                        scanned, files.Count,
+                        0, 0, 0, 0,
+                        file.Path));
                     continue; // Up to date
                 }
             }
@@ -168,6 +178,13 @@ public sealed class PatchEngine : IDisposable
                 0, 0, 0, 0,
                 $"Planning: {file.Path}"));
         }
+
+        // Final planning progress report to ensure we show 100%
+        progress?.Report(new PatchEngineProgress(
+            PatchEnginePhase.Planning,
+            files.Count, files.Count,
+            0, 0, 0, 0,
+            "Planning complete"));
 
         return new PatchPlan
         {
@@ -386,6 +403,14 @@ public sealed class PatchEngine : IDisposable
                     $"Completed: {fileName} ({elapsed.TotalSeconds:F1}s)"));
             });
 
+        // Final assembly progress report to ensure we show 100%
+        progress?.Report(new PatchEngineProgress(
+            PatchEnginePhase.Assembling,
+            totalFiles, totalFiles,
+            Interlocked.Read(ref downloadedBytes) + Interlocked.Read(ref copiedBytes), totalBytes,
+            Interlocked.Read(ref downloadedBytes), Interlocked.Read(ref copiedBytes),
+            "Assembly complete"));
+
         return results.ToList();
     }
 
@@ -581,9 +606,15 @@ public sealed class PatchEngine : IDisposable
             }
         }
 
-        return new CommitResult(committed, failed);
+        // Final commit progress report
+        progress?.Report(new PatchEngineProgress(
+            PatchEnginePhase.Committing,
+            successfulAssemblies.Count, successfulAssemblies.Count,
+            0, 0, 0, 0,
+            "Commit complete"));
 
         await Task.CompletedTask; // Satisfy async signature
+        return new CommitResult(committed, failed);
     }
 
     #endregion
@@ -609,6 +640,7 @@ public sealed class PatchEngine : IDisposable
             var file = plan.ManifestFile;
             var localFilePath = plan.LocalPath;
 
+            // Report at start of verifying this file
             progress?.Report(new PatchEngineProgress(
                 PatchEnginePhase.Verifying,
                 verified, filePlans.Count,
@@ -661,6 +693,13 @@ public sealed class PatchEngine : IDisposable
 
             verified++;
         }
+
+        // Final verification progress report to ensure we show 100%
+        progress?.Report(new PatchEngineProgress(
+            PatchEnginePhase.Verifying,
+            filePlans.Count, filePlans.Count,
+            0, 0, 0, 0,
+            "Verification complete"));
 
         return new VerifyWithFallbackResult(passed, failed, repaired);
     }
