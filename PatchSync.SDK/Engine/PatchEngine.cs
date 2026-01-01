@@ -61,7 +61,7 @@ public sealed class PatchEngine : IDisposable
         var chunker = GetChunker(manifest);
 
         // Phase 1: Plan
-        progress?.Report(new PatchEngineProgress(PatchEnginePhase.Planning, 0, 0, 0, 0, "Calculating update plan..."));
+        progress?.Report(new PatchEngineProgress(PatchEnginePhase.Planning, 0, 0, 0, 0, 0, 0, "Calculating update plan..."));
         var plan = await PlanAsync(localPath, manifest, chunker, progress, cancellationToken);
         result.FilesPlanned = plan.FilesToProcess.Count;
         result.BytesToDownload = plan.TotalBytesToDownload;
@@ -73,18 +73,22 @@ public sealed class PatchEngine : IDisposable
             return result;
         }
 
+        var totalBytesToProcess = plan.TotalBytesToDownload + plan.TotalBytesToCopy;
+
         // Phase 2: Assemble (parallel)
-        progress?.Report(new PatchEngineProgress(PatchEnginePhase.Assembling, 0, plan.FilesToProcess.Count, 0, plan.TotalBytesToDownload, "Downloading and assembling files..."));
+        progress?.Report(new PatchEngineProgress(PatchEnginePhase.Assembling, 0, plan.FilesToProcess.Count, 0, totalBytesToProcess, 0, 0, "Downloading and assembling files..."));
         var assemblyResults = await AssembleAsync(localPath, plan, progress, cancellationToken);
         result.FilesAssembled = assemblyResults.Count(r => r.Success);
+        result.BytesDownloaded = plan.TotalBytesToDownload;
+        result.BytesCopied = plan.TotalBytesToCopy;
 
         // Phase 3: Commit (atomic swap)
-        progress?.Report(new PatchEngineProgress(PatchEnginePhase.Committing, 0, assemblyResults.Count, 0, 0, "Applying changes..."));
+        progress?.Report(new PatchEngineProgress(PatchEnginePhase.Committing, 0, assemblyResults.Count, 0, 0, 0, 0, "Applying changes..."));
         var commitResults = await CommitAsync(localPath, assemblyResults, plan.FilesToDelete, progress, cancellationToken);
         result.FilesCommitted = commitResults.Committed;
 
         // Phase 4: Verify (with fallback)
-        progress?.Report(new PatchEngineProgress(PatchEnginePhase.Verifying, 0, plan.FilesToProcess.Count, 0, 0, "Verifying files..."));
+        progress?.Report(new PatchEngineProgress(PatchEnginePhase.Verifying, 0, plan.FilesToProcess.Count, 0, 0, 0, 0, "Verifying files..."));
         var verifyResults = await VerifyWithFallbackAsync(localPath, manifest, plan.FilesToProcess, progress, cancellationToken);
         result.FilesVerified = verifyResults.Passed;
         result.FilesFailed = verifyResults.Failed;
@@ -98,7 +102,8 @@ public sealed class PatchEngine : IDisposable
         progress?.Report(new PatchEngineProgress(
             PatchEnginePhase.Complete,
             result.FilesVerified, plan.FilesToProcess.Count,
-            plan.TotalBytesToDownload, plan.TotalBytesToDownload,
+            totalBytesToProcess, totalBytesToProcess,
+            plan.TotalBytesToDownload, plan.TotalBytesToCopy,
             result.Message));
 
         return result;
@@ -160,7 +165,7 @@ public sealed class PatchEngine : IDisposable
             progress?.Report(new PatchEngineProgress(
                 PatchEnginePhase.Planning,
                 scanned, files.Count,
-                0, 0,
+                0, 0, 0, 0,
                 $"Planning: {file.Path}"));
         }
 
@@ -168,7 +173,8 @@ public sealed class PatchEngine : IDisposable
         {
             FilesToProcess = filesToProcess,
             FilesToDelete = filesToDelete,
-            TotalBytesToDownload = filesToProcess.Sum(f => f.BytesToDownload)
+            TotalBytesToDownload = filesToProcess.Sum(f => f.BytesToDownload),
+            TotalBytesToCopy = filesToProcess.Sum(f => f.BytesToCopy)
         };
     }
 
@@ -187,6 +193,7 @@ public sealed class PatchEngine : IDisposable
         IContainerHandler? containerHandler = null;
         DownloadMethod method = DownloadMethod.Full;
         long bytesToDownload = file.Size;
+        long bytesToCopy = 0;
 
         // Handle VirtualDelta strategy for container files
         if (file.Strategy == UpdateStrategy.VirtualDelta &&
@@ -216,6 +223,7 @@ public sealed class PatchEngine : IDisposable
 
                     method = DownloadMethod.VirtualDelta;
                     bytesToDownload = virtualDeltaPlan.BytesToDownload;
+                    bytesToCopy = virtualDeltaPlan.BytesToCopy;
                 }
                 catch
                 {
@@ -260,6 +268,10 @@ public sealed class PatchEngine : IDisposable
                 var decision = _strategySelector.Select(deltaPlan, file.CompressedSize, file.Size);
                 method = decision.Method;
                 bytesToDownload = decision.EstimatedBytes;
+                if (method == DownloadMethod.Delta)
+                {
+                    bytesToCopy = deltaPlan.BytesToCopy;
+                }
             }
             catch
             {
@@ -283,7 +295,8 @@ public sealed class PatchEngine : IDisposable
             DeltaPlan = deltaPlan,
             VirtualDeltaPlan = virtualDeltaPlan,
             ContainerHandler = containerHandler,
-            BytesToDownload = bytesToDownload
+            BytesToDownload = bytesToDownload,
+            BytesToCopy = bytesToCopy
         };
     }
 
@@ -300,7 +313,9 @@ public sealed class PatchEngine : IDisposable
         var results = new ConcurrentBag<AssemblyResult>();
         var completedFiles = 0;
         var completedBytes = 0L;
-        var totalBytes = plan.TotalBytesToDownload;
+        var downloadedBytes = 0L;
+        var copiedBytes = 0L;
+        var totalBytes = plan.TotalBytesToDownload + plan.TotalBytesToCopy;
         var totalFiles = plan.FilesToProcess.Count;
 
         await Parallel.ForEachAsync(
@@ -323,12 +338,15 @@ public sealed class PatchEngine : IDisposable
                 }
 
                 var completed = Interlocked.Increment(ref completedFiles);
-                var bytes = Interlocked.Add(ref completedBytes, filePlan.BytesToDownload);
+                var bytes = Interlocked.Add(ref completedBytes, filePlan.BytesToDownload + filePlan.BytesToCopy);
+                var downloaded = Interlocked.Add(ref downloadedBytes, filePlan.BytesToDownload);
+                var copied = Interlocked.Add(ref copiedBytes, filePlan.BytesToCopy);
 
                 progress?.Report(new PatchEngineProgress(
                     PatchEnginePhase.Assembling,
                     completed, totalFiles,
                     bytes, totalBytes,
+                    downloaded, copied,
                     $"Assembled: {filePlan.ManifestFile.Path}"));
             });
 
@@ -442,7 +460,7 @@ public sealed class PatchEngine : IDisposable
             progress?.Report(new PatchEngineProgress(
                 PatchEnginePhase.Committing,
                 committed, successfulAssemblies.Count,
-                0, 0,
+                0, 0, 0, 0,
                 $"Committed: {result.Plan.ManifestFile.Path}"));
         }
 
@@ -505,7 +523,7 @@ public sealed class PatchEngine : IDisposable
             progress?.Report(new PatchEngineProgress(
                 PatchEnginePhase.Verifying,
                 verified, filePlans.Count,
-                0, 0,
+                0, 0, 0, 0,
                 $"Verifying: {file.Path}"));
 
             bool isValid = false;
@@ -686,9 +704,21 @@ public readonly record struct PatchEngineProgress(
     int FilesTotal,
     long BytesComplete,
     long BytesTotal,
+    long BytesDownloaded,
+    long BytesCopied,
     string CurrentStatus)
 {
     public double Percentage => FilesTotal > 0 ? (double)FilesComplete / FilesTotal : 0;
+
+    /// <summary>
+    /// Savings from delta patching (bytes copied locally instead of downloaded).
+    /// </summary>
+    public long BytesSaved => BytesCopied;
+
+    /// <summary>
+    /// Percentage of bytes that came from local copy vs download.
+    /// </summary>
+    public double LocalReusePercentage => BytesComplete > 0 ? (double)BytesCopied / BytesComplete : 0;
 }
 
 /// <summary>
@@ -704,7 +734,24 @@ public sealed class PatchResult
     public int FilesVerified { get; set; }
     public int FilesFailed { get; set; }
     public long BytesToDownload { get; set; }
+    public long BytesDownloaded { get; set; }
+    public long BytesCopied { get; set; }
     public TimeSpan ElapsedTime { get; set; }
+
+    /// <summary>
+    /// Total bytes processed (downloaded + copied).
+    /// </summary>
+    public long BytesTotal => BytesDownloaded + BytesCopied;
+
+    /// <summary>
+    /// Savings from delta patching.
+    /// </summary>
+    public long BytesSaved => BytesCopied;
+
+    /// <summary>
+    /// Percentage of bytes that came from local copy.
+    /// </summary>
+    public double LocalReusePercentage => BytesTotal > 0 ? (double)BytesCopied / BytesTotal : 0;
 }
 
 /// <summary>
@@ -715,6 +762,7 @@ internal sealed class PatchPlan
     public required List<FilePlan> FilesToProcess { get; init; }
     public required List<string> FilesToDelete { get; init; }
     public long TotalBytesToDownload { get; init; }
+    public long TotalBytesToCopy { get; init; }
 }
 
 /// <summary>
@@ -730,6 +778,7 @@ internal sealed class FilePlan
     public VirtualDeltaPlan? VirtualDeltaPlan { get; init; }
     public IContainerHandler? ContainerHandler { get; init; }
     public long BytesToDownload { get; init; }
+    public long BytesToCopy { get; init; }
 }
 
 /// <summary>

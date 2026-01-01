@@ -92,6 +92,8 @@ public sealed class PatchSyncClient : IDisposable
                     p.FilesTotal,
                     p.BytesComplete,
                     p.BytesTotal,
+                    p.BytesDownloaded,
+                    p.BytesCopied,
                     p.CurrentStatus,
                     p.Percentage));
             })
@@ -293,6 +295,8 @@ public readonly record struct PatchProgress(
     int FilesTotal,
     long BytesComplete,
     long BytesTotal,
+    long BytesDownloaded,
+    long BytesCopied,
     string? CurrentFile,
     double CurrentFileProgress)
 {
@@ -300,6 +304,16 @@ public readonly record struct PatchProgress(
     /// Overall completion percentage (0.0 to 1.0).
     /// </summary>
     public double OverallPercentage => BytesTotal > 0 ? (double)BytesComplete / BytesTotal : 0;
+
+    /// <summary>
+    /// Bytes saved by copying locally instead of downloading.
+    /// </summary>
+    public long BytesSaved => BytesCopied;
+
+    /// <summary>
+    /// Percentage of bytes that came from local copy (0.0 to 1.0).
+    /// </summary>
+    public double LocalReusePercentage => BytesComplete > 0 ? (double)BytesCopied / BytesComplete : 0;
 }
 
 /// <summary>
