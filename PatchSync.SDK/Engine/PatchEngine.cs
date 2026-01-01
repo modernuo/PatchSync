@@ -370,14 +370,24 @@ public sealed class PatchEngine : IDisposable
                 var fileStart = DateTime.UtcNow;
                 var fileName = Path.GetFileName(filePlan.ManifestFile.Path);
 
+                // Track per-file bytes for detailed reporting
+                var fileDownloadedBytes = 0L;
+                var fileCopiedBytes = 0L;
+
                 // Create a progress handler that tracks bytes in real-time
                 var fileProgress = new Progress<FileAssemblyProgress>(p =>
                 {
-                    // Add delta bytes atomically
+                    // Add delta bytes atomically to global counters
                     if (p.BytesDownloadedDelta > 0)
+                    {
                         Interlocked.Add(ref downloadedBytes, p.BytesDownloadedDelta);
+                        Interlocked.Add(ref fileDownloadedBytes, p.BytesDownloadedDelta);
+                    }
                     if (p.BytesCopiedDelta > 0)
+                    {
                         Interlocked.Add(ref copiedBytes, p.BytesCopiedDelta);
+                        Interlocked.Add(ref fileCopiedBytes, p.BytesCopiedDelta);
+                    }
 
                     ReportProgress($"{fileName} ({p.Percentage:P0})", completedFiles);
                 });
@@ -399,8 +409,20 @@ public sealed class PatchEngine : IDisposable
                 var completed = Interlocked.Increment(ref completedFiles);
                 var elapsed = DateTime.UtcNow - fileStart;
 
+                // Build status message with per-file byte stats
+                var fileDl = Interlocked.Read(ref fileDownloadedBytes);
+                var fileCp = Interlocked.Read(ref fileCopiedBytes);
+                var statsStr = "";
+                if (fileDl > 0 || fileCp > 0)
+                {
+                    var parts = new List<string>();
+                    if (fileDl > 0) parts.Add($"{FormatBytes(fileDl)}↓");
+                    if (fileCp > 0) parts.Add($"{FormatBytes(fileCp)}↔");
+                    statsStr = $" [{string.Join(" ", parts)}]";
+                }
+
                 var statusMessage = success
-                    ? $"Completed: {fileName} ({elapsed.TotalSeconds:F1}s)"
+                    ? $"Completed: {fileName} ({elapsed.TotalSeconds:F1}s){statsStr}"
                     : $"FAILED: {fileName} - {errorMessage}";
 
                 progress?.Report(new PatchEngineProgress(
@@ -784,6 +806,14 @@ public sealed class PatchEngine : IDisposable
 
         var hash = await SHA256.HashDataAsync(stream, cancellationToken);
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024 * 1024) return $"{bytes / 1024.0:F1} KB";
+        if (bytes < 1024 * 1024 * 1024) return $"{bytes / (1024.0 * 1024.0):F1} MB";
+        return $"{bytes / (1024.0 * 1024.0 * 1024.0):F2} GB";
     }
 
     public void Dispose()

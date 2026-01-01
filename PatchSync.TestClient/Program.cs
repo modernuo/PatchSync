@@ -275,7 +275,7 @@ class Program
         var lastPhase = PatchPhase.Starting;
         var consoleLock = new object();
         var progressBarActive = false;
-        const int ProgressBarWidth = 110;
+        const int ProgressBarWidth = 120;
 
         // Helper to clear progress bar and print a line
         void ClearProgressAndPrint(string message)
@@ -332,7 +332,7 @@ class Program
                     }
                 }
 
-                // Log file completions and failures
+                // Log file completions and failures (per-file stats now included in message)
                 if (p.CurrentFile != null && (p.CurrentFile.StartsWith("Completed:") || p.CurrentFile.StartsWith("FAILED:")))
                 {
                     var prefix = p.CurrentFile.StartsWith("FAILED:") ? "  [ERROR] " : "  ";
