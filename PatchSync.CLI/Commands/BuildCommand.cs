@@ -40,6 +40,7 @@ public static class BuildCommand
                 var tags = parser.Get("tags");
                 var force = parser.Has("force");
                 var dryRun = parser.Has("dry-run");
+                var baseVersion = parser.Get("base", "b");
 
                 var algorithm = parser.GetOrDefault("algorithm", "fastcdc-v1", "a");
                 var minChunk = parser.GetInt("min-chunk", 0);
@@ -48,7 +49,8 @@ public static class BuildCommand
 
                 return await ExecuteWorkspaceModeAsync(
                     channel, version, inputPath, notes, tags,
-                    force, dryRun, algorithm, minChunk, avgChunk, maxChunk);
+                    force, dryRun, algorithm, minChunk, avgChunk, maxChunk,
+                    baseVersion: baseVersion);
             }
             else
             {
@@ -321,6 +323,7 @@ public static class BuildCommand
         int minChunkOverride,
         int avgChunkOverride,
         int maxChunkOverride,
+        string? baseVersion = null,
         WorkspaceManager? existingManager = null)
     {
         // Use existing manager or find workspace
@@ -379,6 +382,71 @@ public static class BuildCommand
         var avgChunk = avgChunkOverride > 0 ? avgChunkOverride : chunkingDefaults.AvgChunkSize;
         var maxChunk = maxChunkOverride > 0 ? maxChunkOverride : chunkingDefaults.MaxChunkSize;
         var minDeltaSize = chunkingDefaults.MinDeltaSize;
+
+        // Parse and load base version if specified
+        GameManifest? baseManifest = null;
+        BasedOnInfo? basedOnInfo = null;
+        BuildComparisonResult? comparisonResult = null;
+        string? baseChannel = null;
+        string? baseVersionString = null;
+
+        if (!string.IsNullOrEmpty(baseVersion))
+        {
+            // Parse base version spec (channel:version or just version)
+            var colonIdx = baseVersion.IndexOf(':');
+            if (colonIdx > 0)
+            {
+                baseChannel = baseVersion[..colonIdx];
+                baseVersionString = baseVersion[(colonIdx + 1)..];
+            }
+            else
+            {
+                baseChannel = channel; // Same channel
+                baseVersionString = baseVersion;
+            }
+
+            // Validate base version exists
+            if (!manager.VersionExists(baseChannel, baseVersionString))
+            {
+                AnsiConsole.MarkupLine($"[red]Base version not found:[/] {baseChannel}/{baseVersionString}");
+                return 1;
+            }
+
+            // Load base manifest
+            var baseManifestPath = manager.GetManifestPath(baseChannel, baseVersionString);
+            if (!File.Exists(baseManifestPath))
+            {
+                AnsiConsole.MarkupLine($"[red]Base manifest not found:[/] {baseManifestPath}");
+                return 1;
+            }
+
+            await using var baseManifestStream = File.OpenRead(baseManifestPath);
+            baseManifest = await JsonSerializer.DeserializeAsync(
+                baseManifestStream,
+                ManifestJsonContext.Default.GameManifest);
+
+            if (baseManifest == null)
+            {
+                AnsiConsole.MarkupLine("[red]Failed to load base manifest[/]");
+                return 1;
+            }
+
+            basedOnInfo = new BasedOnInfo
+            {
+                Channel = baseChannel,
+                Version = baseVersionString,
+                BaseBuiltAt = baseManifest.BuildDate,
+                IsCrossChannel = baseChannel != channel
+            };
+
+            AnsiConsole.MarkupLine($"[blue]Base version:[/] {baseChannel}/{baseVersionString}");
+
+            // Run comparison
+            var comparer = new BuildComparer(new Progress<string>(msg => AnsiConsole.MarkupLine($"[grey]{msg}[/]")));
+            comparisonResult = await comparer.CompareAsync(inputPath, baseManifest);
+
+            AnsiConsole.MarkupLine($"[dim]  {comparisonResult.NewFiles.Count} new, {comparisonResult.ModifiedFiles.Count} modified, {comparisonResult.DeletedFiles.Count} deleted, {comparisonResult.UnchangedFiles.Count} unchanged[/]");
+        }
 
         if (dryRun)
         {
@@ -480,7 +548,7 @@ public static class BuildCommand
 
         // Calculate signature stats
         var sigFiles = Directory.GetFiles(sigDir, "*.sig");
-        var sigTotalSize = sigFiles.Sum(f => new FileInfo(f).Length);
+        var sigTotalSize = sigFiles.Sum(f => new System.IO.FileInfo(f).Length);
 
         // Create version metadata
         var metadata = new VersionMetadata
@@ -517,7 +585,18 @@ public static class BuildCommand
             Notes = string.IsNullOrWhiteSpace(notes) ? null : notes,
             Tags = string.IsNullOrWhiteSpace(tags)
                 ? null
-                : tags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList()
+                : tags.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList(),
+            BasedOn = basedOnInfo,
+            Comparison = comparisonResult != null
+                ? new ComparisonInfo
+                {
+                    PreviousVersion = baseVersionString,
+                    NewFiles = comparisonResult.NewFiles.Count,
+                    ModifiedFiles = comparisonResult.ModifiedFiles.Count,
+                    DeletedFiles = comparisonResult.DeletedFiles.Count,
+                    UnchangedFiles = comparisonResult.UnchangedFiles.Count
+                }
+                : null
         };
 
         await manager.SaveVersionMetadataAsync(channel, version, metadata);
@@ -700,6 +779,7 @@ public static class BuildCommand
         AnsiConsole.MarkupLine("  -c, --channel <NAME>      Target channel (prod, beta, dev)");
         AnsiConsole.MarkupLine("  -v, --version <VERSION>   Version string");
         AnsiConsole.MarkupLine("  -i, --input <PATH>        Input directory (overrides workspace default)");
+        AnsiConsole.MarkupLine("  -b, --base <SPEC>         Base version for comparison (version or channel:version)");
         AnsiConsole.MarkupLine("      --notes <TEXT>        Release notes");
         AnsiConsole.MarkupLine("      --tags <LIST>         Comma-separated tags");
         AnsiConsole.MarkupLine("      --force               Overwrite existing version");
@@ -722,6 +802,8 @@ public static class BuildCommand
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine("[yellow]Examples:[/]");
         AnsiConsole.MarkupLine("  patchsync build -c prod -v 1.0.0");
+        AnsiConsole.MarkupLine("  patchsync build -c prod -v 1.1.0 --base 1.0.0");
+        AnsiConsole.MarkupLine("  patchsync build -c prod -v 2.0.0 --base beta:2.0.0-rc1");
         AnsiConsole.MarkupLine("  patchsync build -c beta -v 1.1.0-beta.1 --notes \"New features\"");
         AnsiConsole.MarkupLine("  patchsync build -i ./game -o ./output -v 1.0.0");
     }

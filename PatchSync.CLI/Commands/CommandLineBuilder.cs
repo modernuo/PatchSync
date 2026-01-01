@@ -36,6 +36,9 @@ public static class CliBuilder
         rootCommand.Add(BuildUploadCommand());
         rootCommand.Add(BuildStatusCommand());
         rootCommand.Add(BuildInfoCommand());
+        rootCommand.Add(BuildFilesCommand());
+        rootCommand.Add(BuildPromoteCommand());
+        rootCommand.Add(BuildCdnCommand());
 #if FONT_PREVIEW
         rootCommand.Add(BuildFontsCommand());
 #endif
@@ -176,6 +179,11 @@ public static class CliBuilder
             Description = "Mark version as staged for publishing"
         };
 
+        var baseOption = new Option<string?>("--base", "-b")
+        {
+            Description = "Base version for comparison (version or channel:version)"
+        };
+
         var command = new Command("build", "Generate signatures and manifest for a directory")
         {
             inputOption,
@@ -187,7 +195,8 @@ public static class CliBuilder
             avgChunkOption,
             maxChunkOption,
             algorithmOption,
-            stagedOption
+            stagedOption,
+            baseOption
         };
 
         command.SetAction(async (parseResult, cancellationToken) =>
@@ -202,6 +211,7 @@ public static class CliBuilder
             var maxChunk = parseResult.GetValue(maxChunkOption);
             var algorithm = parseResult.GetValue(algorithmOption);
             var staged = parseResult.GetValue(stagedOption);
+            var baseVer = parseResult.GetValue(baseOption);
 
             var args = new List<string>();
             if (input != null) { args.Add("-i"); args.Add(input); }
@@ -214,6 +224,7 @@ public static class CliBuilder
             if (maxChunk != null) { args.Add("--max-chunk"); args.Add(maxChunk.Value.ToString()); }
             if (algorithm != null) { args.Add("--algorithm"); args.Add(algorithm); }
             if (staged) { args.Add("--staged"); }
+            if (baseVer != null) { args.Add("-b"); args.Add(baseVer); }
 
             return await BuildCommand.RunAsync(args.ToArray());
         });
@@ -533,6 +544,166 @@ public static class CliBuilder
 
     #endregion
 #endif
+
+    #region Files Command
+
+    private static Command BuildFilesCommand()
+    {
+        var channelOption = new Option<string?>("--channel", "-c")
+        {
+            Description = "Channel name"
+        };
+
+        var versionOption = new Option<string?>("--version", "-v")
+        {
+            Description = "Version string"
+        };
+
+        var subCommandArg = new Argument<string[]>("args")
+        {
+            Description = "Subcommand and arguments",
+            Arity = ArgumentArity.ZeroOrMore
+        };
+
+        var command = new Command("files", "Manage files in a built version")
+        {
+            channelOption,
+            versionOption,
+            subCommandArg
+        };
+
+        command.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var channel = parseResult.GetValue(channelOption);
+            var version = parseResult.GetValue(versionOption);
+            var subArgs = parseResult.GetValue(subCommandArg) ?? [];
+
+            var args = new List<string>(subArgs);
+            if (channel != null) { args.Add("-c"); args.Add(channel); }
+            if (version != null) { args.Add("-v"); args.Add(version); }
+
+            return await FilesCommand.RunAsync(args.ToArray());
+        });
+
+        return command;
+    }
+
+    #endregion
+
+    #region CDN Command
+
+    private static Command BuildCdnCommand()
+    {
+        var setupCommand = new Command("setup", "Configure CDN/S3 storage interactively");
+        var profileOption = new Option<string?>("--profile", "-p")
+        {
+            Description = "Profile name to create/update"
+        };
+        var forceOption = new Option<bool>("--force", "-f")
+        {
+            Description = "Overwrite existing profile"
+        };
+        setupCommand.Add(profileOption);
+        setupCommand.Add(forceOption);
+
+        setupCommand.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var profile = parseResult.GetValue(profileOption);
+            var force = parseResult.GetValue(forceOption);
+
+            var args = new List<string>();
+            if (profile != null) { args.Add("-p"); args.Add(profile); }
+            if (force) args.Add("--force");
+
+            return await CdnSetupWizard.RunAsync(args.ToArray());
+        });
+
+        var testCommand = new Command("test", "Test CDN connectivity");
+        var testProfileOption = new Option<string?>("--profile", "-p")
+        {
+            Description = "Profile to test"
+        };
+        testCommand.Add(testProfileOption);
+
+        testCommand.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var profile = parseResult.GetValue(testProfileOption);
+            var args = new List<string> { "test" };
+            if (profile != null) { args.Add("-p"); args.Add(profile); }
+            return await CdnSettingsMenu.RunAsync(args.ToArray());
+        });
+
+        var command = new Command("cdn", "CDN and storage configuration")
+        {
+            setupCommand,
+            testCommand
+        };
+
+        // Default to setup wizard when no subcommand
+        command.SetAction(async (parseResult, cancellationToken) =>
+        {
+            return await CdnSetupWizard.RunAsync([]);
+        });
+
+        return command;
+    }
+
+    #endregion
+
+    #region Promote Command
+
+    private static Command BuildPromoteCommand()
+    {
+        var sourceArg = new Argument<string?>("source")
+        {
+            Description = "Source version (channel:version format, e.g., beta:1.0.0)",
+            Arity = ArgumentArity.ZeroOrOne
+        };
+
+        var targetArg = new Argument<string?>("target")
+        {
+            Description = "Target channel",
+            Arity = ArgumentArity.ZeroOrOne
+        };
+
+        var asOption = new Option<string?>("--as")
+        {
+            Description = "Version string in target channel (default: same as source)"
+        };
+
+        var forceOption = new Option<bool>("--force", "-f")
+        {
+            Description = "Skip confirmation prompt"
+        };
+
+        var command = new Command("promote", "Promote a version to another channel")
+        {
+            sourceArg,
+            targetArg,
+            asOption,
+            forceOption
+        };
+
+        command.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var source = parseResult.GetValue(sourceArg);
+            var target = parseResult.GetValue(targetArg);
+            var asVersion = parseResult.GetValue(asOption);
+            var force = parseResult.GetValue(forceOption);
+
+            var args = new List<string>();
+            if (source != null) args.Add(source);
+            if (target != null) args.Add(target);
+            if (asVersion != null) { args.Add("--as"); args.Add(asVersion); }
+            if (force) args.Add("--force");
+
+            return await PromoteCommand.RunAsync(args.ToArray());
+        });
+
+        return command;
+    }
+
+    #endregion
 
     #region Helpers
 
