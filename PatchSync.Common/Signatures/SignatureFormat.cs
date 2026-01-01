@@ -169,7 +169,7 @@ public sealed class SignatureFile
     public static SignatureFile Read(Stream input)
     {
         Span<byte> header = stackalloc byte[SignatureFormat.HeaderSize];
-        if (input.Read(header) != SignatureFormat.HeaderSize)
+        if (!TryReadExact(input, header))
         {
             throw new InvalidDataException("Signature file too short to contain header");
         }
@@ -208,7 +208,7 @@ public sealed class SignatureFile
 
         for (int i = 0; i < chunkCount; i++)
         {
-            if (input.Read(chunkBuffer) != SignatureFormat.ChunkEntrySize)
+            if (!TryReadExact(input, chunkBuffer))
             {
                 throw new InvalidDataException($"Signature file truncated at chunk {i}");
             }
@@ -261,6 +261,23 @@ public sealed class SignatureFile
             AverageSize = AverageSize,
             MaxSize = MaxSize
         };
+    }
+
+    /// <summary>
+    /// Reads exactly the requested number of bytes from a stream.
+    /// Network streams may return fewer bytes than requested per Read() call.
+    /// </summary>
+    private static bool TryReadExact(Stream stream, Span<byte> buffer)
+    {
+        int totalRead = 0;
+        while (totalRead < buffer.Length)
+        {
+            int bytesRead = stream.Read(buffer.Slice(totalRead));
+            if (bytesRead == 0)
+                return false; // End of stream before buffer filled
+            totalRead += bytesRead;
+        }
+        return true;
     }
 }
 

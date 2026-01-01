@@ -29,4 +29,8 @@
         <ProjectReference Include="..\PatchSync.Common\PatchSync.Common.csproj" />
         <ProjectReference Include="..\PatchSync.SDK\PatchSync.SDK.csproj" />
     </ItemGroup>
+
+    <ItemGroup>
+      <Folder Include="dev-docs\" />
+    </ItemGroup>
 </Project>

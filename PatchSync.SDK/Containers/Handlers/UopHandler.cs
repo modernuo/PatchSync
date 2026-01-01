@@ -64,6 +64,8 @@ public sealed class UopHandler : IContainerHandler
         int fileCount = BinaryPrimitives.ReadInt32LittleEndian(header[24..28]);
 
         var entries = new List<ContainerEntry>(fileCount);
+        Span<byte> blockHeader = stackalloc byte[12];
+        Span<byte> entryBuffer = stackalloc byte[EntrySize];
 
         // Follow block chain
         while (nextBlockOffset != 0)
@@ -71,14 +73,12 @@ public sealed class UopHandler : IContainerHandler
             container.Position = nextBlockOffset;
 
             // Read block header
-            Span<byte> blockHeader = stackalloc byte[12];
             container.ReadExactly(blockHeader);
 
             int entryCount = BinaryPrimitives.ReadInt32LittleEndian(blockHeader[0..4]);
             long nextBlock = BinaryPrimitives.ReadInt64LittleEndian(blockHeader[4..12]);
 
             // Read entries
-            Span<byte> entryBuffer = stackalloc byte[EntrySize];
             for (int i = 0; i < entryCount; i++)
             {
                 container.ReadExactly(entryBuffer);
@@ -218,6 +218,8 @@ public sealed class UopHandler : IContainerHandler
         long nextBlockOffset = BinaryPrimitives.ReadInt64LittleEndian(fileHeader.AsSpan(12, 8));
         uint blockCapacity = BinaryPrimitives.ReadUInt32LittleEndian(fileHeader.AsSpan(20, 4));
 
+        Span<byte> blockHeader = stackalloc byte[12];
+
         // Collect all blocks
         var blocks = new List<(long Offset, byte[] Data)>();
         while (nextBlockOffset != 0)
@@ -225,7 +227,6 @@ public sealed class UopHandler : IContainerHandler
             container.Position = nextBlockOffset;
 
             // Read block header to get entry count and next block
-            Span<byte> blockHeader = stackalloc byte[12];
             container.ReadExactly(blockHeader);
 
             int entryCount = BinaryPrimitives.ReadInt32LittleEndian(blockHeader[0..4]);

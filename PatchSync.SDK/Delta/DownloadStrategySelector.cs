@@ -120,7 +120,10 @@ public enum DownloadMethod
     Compressed,
 
     /// <summary>Download the full uncompressed file.</summary>
-    Full
+    Full,
+
+    /// <summary>Use virtual delta patching for container files.</summary>
+    VirtualDelta
 }
 
 /// <summary>

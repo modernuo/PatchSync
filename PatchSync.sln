@@ -10,6 +10,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PatchSync.Tests", "PatchSyn
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PatchSync.CLI.Tests", "PatchSync.CLI.Tests\PatchSync.CLI.Tests.csproj", "{7A9BE402-1299-428C-87A0-F208B5C03739}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PatchSync.TestClient", "PatchSync.TestClient\PatchSync.TestClient.csproj", "{D8429580-2093-48E1-B943-B3AD5838061E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -80,6 +82,18 @@ Global
 		{7A9BE402-1299-428C-87A0-F208B5C03739}.Release|x64.Build.0 = Release|Any CPU
 		{7A9BE402-1299-428C-87A0-F208B5C03739}.Release|x86.ActiveCfg = Release|Any CPU
 		{7A9BE402-1299-428C-87A0-F208B5C03739}.Release|x86.Build.0 = Release|Any CPU
+		{D8429580-2093-48E1-B943-B3AD5838061E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D8429580-2093-48E1-B943-B3AD5838061E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D8429580-2093-48E1-B943-B3AD5838061E}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D8429580-2093-48E1-B943-B3AD5838061E}.Debug|x64.Build.0 = Debug|Any CPU
+		{D8429580-2093-48E1-B943-B3AD5838061E}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D8429580-2093-48E1-B943-B3AD5838061E}.Debug|x86.Build.0 = Debug|Any CPU
+		{D8429580-2093-48E1-B943-B3AD5838061E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D8429580-2093-48E1-B943-B3AD5838061E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D8429580-2093-48E1-B943-B3AD5838061E}.Release|x64.ActiveCfg = Release|Any CPU
+		{D8429580-2093-48E1-B943-B3AD5838061E}.Release|x64.Build.0 = Release|Any CPU
+		{D8429580-2093-48E1-B943-B3AD5838061E}.Release|x86.ActiveCfg = Release|Any CPU
+		{D8429580-2093-48E1-B943-B3AD5838061E}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
