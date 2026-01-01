@@ -5,6 +5,7 @@ using PatchSync.Common.Storage;
 using PatchSync.SDK.Containers;
 using PatchSync.SDK.Delta;
 using PatchSync.SDK.Sources;
+using PatchSync.SDK.Storage;
 
 namespace PatchSync.SDK.Assembly;
 
@@ -16,6 +17,7 @@ public sealed class ContainerAssembler
     private readonly IStorageProvider _storage;
     private readonly AssemblyOptions _options;
     private readonly ContainerRegistry _containerRegistry;
+    private readonly RangeDownloader _rangeDownloader;
 
     public ContainerAssembler(
         IStorageProvider storage,
@@ -25,6 +27,12 @@ public sealed class ContainerAssembler
         _storage = storage ?? throw new ArgumentNullException(nameof(storage));
         _options = options ?? new AssemblyOptions();
         _containerRegistry = containerRegistry ?? ContainerRegistry.Default;
+        _rangeDownloader = new RangeDownloader(storage, new RangeDownloaderOptions
+        {
+            MaxConcurrency = _options.MaxConcurrency,
+            BufferSize = _options.BufferSize,
+            MaxCoalesceGap = _options.MaxCoalesceGap
+        });
     }
 
     /// <summary>
@@ -88,7 +96,24 @@ public sealed class ContainerAssembler
 
             try
             {
-                // Process each entry
+                // Phase 1: Batch download all remote ranges
+                var downloadRanges = GetAllDownloadRanges(plan);
+                if (downloadRanges.Count > 0)
+                {
+                    progressState.SetPhase(ContainerAssemblyPhase.Downloading);
+
+                    var downloadProgress = new Progress<RangeDownloadProgress>(p =>
+                    {
+                        progressState.SetDownloadProgress(p.BytesDownloaded, p.BytesTotal, p.BytesDelta);
+                    });
+
+                    await _rangeDownloader.DownloadRangesToStreamAsync(
+                        remotePath, downloadRanges, targetStream, downloadProgress, cancellationToken);
+                }
+
+                // Phase 2: Copy local entries/chunks
+                progressState.SetPhase(ContainerAssemblyPhase.Assembling);
+
                 foreach (var entry in plan.Entries)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -102,18 +127,14 @@ public sealed class ContainerAssembler
                                 progressState, cancellationToken);
                             break;
 
-                        case EntryMethod.DeltaChunks when entry.ChunkPlan != null:
-                            await AssembleEntryDeltaAsync(
-                                targetStream, remotePath, entry, localContainer,
+                        case EntryMethod.DeltaChunks when entry.ChunkPlan != null && localContainer != null:
+                            // Only copy the local chunks (downloads already done in batch)
+                            await CopyLocalChunksAsync(
+                                targetStream, localContainer, entry,
                                 progressState, cancellationToken);
                             break;
 
-                        case EntryMethod.DownloadFull:
-                        default:
-                            await DownloadEntryAsync(
-                                targetStream, remotePath, entry,
-                                progressState, cancellationToken);
-                            break;
+                        // DownloadFull entries are already written by batch download
                     }
 
                     progressState.EntryComplete();
@@ -155,6 +176,43 @@ public sealed class ContainerAssembler
         }
     }
 
+    /// <summary>
+    /// Collects all byte ranges that need to be downloaded from the remote container.
+    /// </summary>
+    private IReadOnlyList<ByteRange> GetAllDownloadRanges(VirtualDeltaPlan plan)
+    {
+        var ranges = new List<ByteRange>();
+
+        foreach (var entry in plan.Entries)
+        {
+            switch (entry.Method)
+            {
+                case EntryMethod.DownloadFull:
+                    // Download header + data together
+                    ranges.Add(new ByteRange(entry.HeaderOffset, entry.TotalSize));
+                    break;
+
+                case EntryMethod.DeltaChunks when entry.ChunkPlan != null:
+                    // Download entry header
+                    if (entry.HeaderSize > 0)
+                    {
+                        ranges.Add(new ByteRange(entry.HeaderOffset, entry.HeaderSize));
+                    }
+
+                    // Download remote chunks (offsets relative to entry, convert to absolute)
+                    foreach (var action in entry.ChunkPlan.Actions.OfType<DownloadRemote>())
+                    {
+                        var absoluteOffset = entry.TargetOffset + action.TargetOffset;
+                        ranges.Add(new ByteRange(absoluteOffset, action.Length));
+                    }
+                    break;
+            }
+        }
+
+        // Coalesce ranges with configured gap tolerance
+        return RangeDownloader.CoalesceRanges(ranges, _options.MaxCoalesceGap);
+    }
+
     private async Task CopyLocalEntryAsync(
         FileStream target,
         FileStream localContainer,
@@ -188,127 +246,40 @@ public sealed class ContainerAssembler
         }
     }
 
-    private async Task DownloadEntryAsync(
+    private async Task CopyLocalChunksAsync(
         FileStream target,
-        string remotePath,
+        FileStream localContainer,
         EntryPlan entry,
         ContainerAssemblyProgressState progress,
         CancellationToken cancellationToken)
     {
-        // Download header + data together
-        var totalSize = entry.TotalSize; // HeaderSize + Size
-        target.Position = entry.HeaderOffset; // Start at header position
+        // Only copy local chunks - remote chunks already downloaded in batch
+        var localChunks = entry.ChunkPlan!.Actions.OfType<CopyLocal>();
 
-        await using var remoteStream = await _storage.GetRangeAsync(
-            remotePath, entry.HeaderOffset, totalSize, cancellationToken);
-
-        var buffer = new byte[Math.Min(totalSize, _options.BufferSize)];
-        int remaining = totalSize;
-
-        while (remaining > 0)
-        {
-            int toRead = Math.Min(remaining, buffer.Length);
-            int bytesRead = await remoteStream.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken);
-
-            if (bytesRead == 0)
-                throw new EndOfStreamException($"Unexpected end of remote stream at entry {entry.EntryId}");
-
-            await target.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
-            remaining -= bytesRead;
-            progress.AddBytesDownloaded(bytesRead);
-        }
-    }
-
-    private async Task AssembleEntryDeltaAsync(
-        FileStream target,
-        string remotePath,
-        EntryPlan entry,
-        FileStream? localContainer,
-        ContainerAssemblyProgressState progress,
-        CancellationToken cancellationToken)
-    {
-        // Download entry header first (not part of CDC chunks)
-        if (entry.HeaderSize > 0)
-        {
-            target.Position = entry.HeaderOffset;
-            await using var headerStream = await _storage.GetRangeAsync(
-                remotePath, entry.HeaderOffset, entry.HeaderSize, cancellationToken);
-            await DownloadChunkAsync(target, headerStream, entry.HeaderSize, progress, cancellationToken);
-        }
-
-        // Process data chunks
-        foreach (var action in entry.ChunkPlan!.Actions)
+        foreach (var chunk in localChunks)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Calculate absolute target offset (entry data offset + chunk offset within entry)
-            long absoluteOffset = entry.TargetOffset + action.TargetOffset;
+            // Calculate absolute target offset
+            var absoluteOffset = entry.TargetOffset + chunk.TargetOffset;
             target.Position = absoluteOffset;
+            localContainer.Position = chunk.Source.Offset;
 
-            switch (action)
+            var buffer = new byte[Math.Min(chunk.Length, _options.BufferSize)];
+            int remaining = chunk.Length;
+
+            while (remaining > 0)
             {
-                case CopyLocal copyLocal when localContainer != null:
-                    localContainer.Position = copyLocal.Source.Offset;
-                    await CopyChunkAsync(target, localContainer, copyLocal.Length, progress, cancellationToken);
-                    break;
+                int toRead = Math.Min(remaining, buffer.Length);
+                int bytesRead = await localContainer.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken);
 
-                case DownloadRemote downloadRemote:
-                    // Download chunk from container at absolute offset
-                    await using (var remoteStream = await _storage.GetRangeAsync(
-                        remotePath, absoluteOffset, downloadRemote.Length, cancellationToken))
-                    {
-                        await DownloadChunkAsync(target, remoteStream, downloadRemote.Length, progress, cancellationToken);
-                    }
-                    break;
+                if (bytesRead == 0)
+                    throw new EndOfStreamException($"Unexpected end of local container while copying chunk for entry {entry.EntryId}");
+
+                await target.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+                remaining -= bytesRead;
+                progress.AddBytesCopied(bytesRead);
             }
-        }
-    }
-
-    private async Task CopyChunkAsync(
-        FileStream target,
-        FileStream source,
-        int length,
-        ContainerAssemblyProgressState progress,
-        CancellationToken cancellationToken)
-    {
-        var buffer = new byte[Math.Min(length, _options.BufferSize)];
-        int remaining = length;
-
-        while (remaining > 0)
-        {
-            int toRead = Math.Min(remaining, buffer.Length);
-            int bytesRead = await source.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken);
-
-            if (bytesRead == 0)
-                throw new EndOfStreamException("Unexpected end of source while copying chunk");
-
-            await target.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
-            remaining -= bytesRead;
-            progress.AddBytesCopied(bytesRead);
-        }
-    }
-
-    private async Task DownloadChunkAsync(
-        FileStream target,
-        Stream remoteStream,
-        int length,
-        ContainerAssemblyProgressState progress,
-        CancellationToken cancellationToken)
-    {
-        var buffer = new byte[Math.Min(length, _options.BufferSize)];
-        int remaining = length;
-
-        while (remaining > 0)
-        {
-            int toRead = Math.Min(remaining, buffer.Length);
-            int bytesRead = await remoteStream.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken);
-
-            if (bytesRead == 0)
-                throw new EndOfStreamException("Unexpected end of remote stream while downloading chunk");
-
-            await target.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
-            remaining -= bytesRead;
-            progress.AddBytesDownloaded(bytesRead);
         }
     }
 
@@ -411,9 +382,9 @@ public sealed class ContainerAssembler
             Report();
         }
 
-        public void AddBytesDownloaded(int bytes)
+        public void SetDownloadProgress(long totalDownloaded, long bytesTotal, long delta)
         {
-            _bytesDownloaded += bytes;
+            _bytesDownloaded = totalDownloaded;
             Report();
         }
 
@@ -486,7 +457,9 @@ public enum ContainerAssemblyPhase
 {
     /// <summary>Preparing to assemble.</summary>
     Preparing,
-    /// <summary>Actively copying/downloading entries.</summary>
+    /// <summary>Downloading remote ranges in batch.</summary>
+    Downloading,
+    /// <summary>Copying local entries/chunks.</summary>
     Assembling,
     /// <summary>Verifying final hash.</summary>
     Verifying,

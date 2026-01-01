@@ -190,17 +190,31 @@ class Program
         var breakdown = result.GetStrategyBreakdown();
         Console.WriteLine();
         Console.WriteLine("Download estimate:");
-        Console.WriteLine($"  Worst case (no delta): {FormatSize(breakdown.TotalWorstCaseBytes)}");
+        Console.WriteLine($"  Worst case (no delta):  {FormatSize(breakdown.TotalWorstCaseBytes)}");
         Console.WriteLine($"  Estimated (with delta): {FormatSize(breakdown.TotalEstimatedBytes)}");
         Console.WriteLine($"  Estimated savings:      {FormatSize(breakdown.EstimatedSavings)} ({breakdown.SavingsPercentage:P0})");
+        if (breakdown.TotalCoalesceOverhead > 0)
+        {
+            Console.WriteLine($"  Range coalesce overhead: ~{FormatSize(breakdown.TotalCoalesceOverhead)} (included in estimate)");
+        }
         Console.WriteLine();
         Console.WriteLine("By strategy:");
         if (breakdown.DeltaFileCount > 0)
-            Console.WriteLine($"  Delta (CDC):       {breakdown.DeltaFileCount,4} files, ~{FormatSize(breakdown.DeltaEstimatedBytes)} estimated");
+        {
+            var deltaInfo = breakdown.DeltaCoalesceOverhead > 0
+                ? $"~{FormatSize(breakdown.DeltaEstimatedBytes)} (incl. ~{FormatSize(breakdown.DeltaCoalesceOverhead)} coalesce)"
+                : $"~{FormatSize(breakdown.DeltaEstimatedBytes)}";
+            Console.WriteLine($"  Delta (CDC):        {breakdown.DeltaFileCount,4} files, {deltaInfo}");
+        }
         if (breakdown.VirtualDeltaFileCount > 0)
-            Console.WriteLine($"  VirtualDelta (UOP): {breakdown.VirtualDeltaFileCount,3} files, ~{FormatSize(breakdown.VirtualDeltaEstimatedBytes)} estimated");
+        {
+            var vdInfo = breakdown.VirtualDeltaCoalesceOverhead > 0
+                ? $"~{FormatSize(breakdown.VirtualDeltaEstimatedBytes)} (incl. ~{FormatSize(breakdown.VirtualDeltaCoalesceOverhead)} coalesce)"
+                : $"~{FormatSize(breakdown.VirtualDeltaEstimatedBytes)}";
+            Console.WriteLine($"  VirtualDelta (UOP): {breakdown.VirtualDeltaFileCount,4} files, {vdInfo}");
+        }
         if (breakdown.FullDownloadFileCount > 0)
-            Console.WriteLine($"  Full download:     {breakdown.FullDownloadFileCount,4} files, {FormatSize(breakdown.FullDownloadBytes)}");
+            Console.WriteLine($"  Full download:      {breakdown.FullDownloadFileCount,4} files, {FormatSize(breakdown.FullDownloadBytes)}");
 
         // List files needing update
         if (result.NeedsUpdate.Count > 0)
@@ -259,6 +273,7 @@ class Program
         var startTime = DateTime.UtcNow;
         var lastReportTime = DateTime.UtcNow;
         var lastPhase = PatchPhase.Starting;
+        var lastCurrentFile = "";
 
         // Create progress handler
         var progress = new Progress<PatchProgress>(p =>
@@ -290,6 +305,13 @@ class Program
                 }
             }
 
+            // Log file completions (contains timing info)
+            if (p.CurrentFile != null && p.CurrentFile.StartsWith("Completed:") && p.CurrentFile != lastCurrentFile)
+            {
+                lastCurrentFile = p.CurrentFile;
+                Console.WriteLine($"\r  {p.CurrentFile}".PadRight(80));
+            }
+
             if ((now - lastReportTime).TotalMilliseconds < 100 && p.Phase != PatchPhase.Complete)
                 return;
             lastReportTime = now;
@@ -308,9 +330,11 @@ class Program
 
                 case PatchPhase.Processing:
                     var pct = p.OverallPercentage * 100;
-                    var bar = BuildProgressBar(p.OverallPercentage, 25);
-                    var fileInfo = p.CurrentFile != null ? TruncatePath(p.CurrentFile, 25) : "";
-                    Console.Write($"\r  {bar} {pct,5:F1}% | {FormatSize((long)speed)}/s | {p.FilesComplete}/{p.FilesTotal} | {fileInfo}".PadRight(100));
+                    var bar = BuildProgressBar(p.OverallPercentage, 20);
+                    var fileInfo = p.CurrentFile != null && !p.CurrentFile.StartsWith("Completed:")
+                        ? TruncatePath(p.CurrentFile, 20)
+                        : "";
+                    Console.Write($"\r  {bar} {pct,5:F1}% | {FormatSize((long)speed)}/s | {FormatSize(p.BytesDownloaded)}↓ {FormatSize(p.BytesCopied)}↔ | {p.FilesComplete}/{p.FilesTotal} | {fileInfo}".PadRight(110));
                     break;
 
                 case PatchPhase.Verifying:
@@ -325,7 +349,7 @@ class Program
                     Console.WriteLine();
                     Console.WriteLine($"Patch complete!");
                     Console.WriteLine($"  Files processed: {p.FilesComplete}");
-                    Console.WriteLine($"  Time elapsed:    {elapsed:mm\\:ss}");
+                    Console.WriteLine($"  Time elapsed:    {elapsed:mm\\:ss\\.f}");
                     Console.WriteLine($"  Average speed:   {FormatSize((long)speed)}/s");
                     Console.WriteLine();
                     Console.WriteLine("Download statistics:");

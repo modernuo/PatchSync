@@ -312,11 +312,34 @@ public sealed class PatchEngine : IDisposable
     {
         var results = new ConcurrentBag<AssemblyResult>();
         var completedFiles = 0;
-        var completedBytes = 0L;
         var downloadedBytes = 0L;
         var copiedBytes = 0L;
         var totalBytes = plan.TotalBytesToDownload + plan.TotalBytesToCopy;
         var totalFiles = plan.FilesToProcess.Count;
+        var lastReportTime = DateTime.UtcNow;
+        var reportLock = new object();
+
+        void ReportProgress(string currentFile, int currentFileNumber)
+        {
+            var now = DateTime.UtcNow;
+            lock (reportLock)
+            {
+                // Throttle to max 10 reports/sec to avoid flooding
+                if ((now - lastReportTime).TotalMilliseconds < 100)
+                    return;
+                lastReportTime = now;
+            }
+
+            var downloaded = Interlocked.Read(ref downloadedBytes);
+            var copied = Interlocked.Read(ref copiedBytes);
+
+            progress?.Report(new PatchEngineProgress(
+                PatchEnginePhase.Assembling,
+                completedFiles, totalFiles,
+                downloaded + copied, totalBytes,
+                downloaded, copied,
+                currentFile));
+        }
 
         await Parallel.ForEachAsync(
             plan.FilesToProcess,
@@ -327,73 +350,124 @@ public sealed class PatchEngine : IDisposable
             },
             async (filePlan, ct) =>
             {
+                var fileStart = DateTime.UtcNow;
+                var fileName = Path.GetFileName(filePlan.ManifestFile.Path);
+
+                // Create a progress handler that tracks bytes in real-time
+                var fileProgress = new Progress<FileAssemblyProgress>(p =>
+                {
+                    // Add delta bytes atomically
+                    if (p.BytesDownloadedDelta > 0)
+                        Interlocked.Add(ref downloadedBytes, p.BytesDownloadedDelta);
+                    if (p.BytesCopiedDelta > 0)
+                        Interlocked.Add(ref copiedBytes, p.BytesCopiedDelta);
+
+                    ReportProgress($"{fileName} ({p.Percentage:P0})", completedFiles);
+                });
+
                 try
                 {
-                    await AssembleFileAsync(filePlan, ct);
-                    results.Add(new AssemblyResult(filePlan, true, null));
+                    await AssembleFileAsync(filePlan, fileProgress, ct);
+                    results.Add(new AssemblyResult(filePlan, true, null, DateTime.UtcNow - fileStart));
                 }
                 catch (Exception ex)
                 {
-                    results.Add(new AssemblyResult(filePlan, false, ex.Message));
+                    results.Add(new AssemblyResult(filePlan, false, ex.Message, DateTime.UtcNow - fileStart));
                 }
 
                 var completed = Interlocked.Increment(ref completedFiles);
-                var bytes = Interlocked.Add(ref completedBytes, filePlan.BytesToDownload + filePlan.BytesToCopy);
-                var downloaded = Interlocked.Add(ref downloadedBytes, filePlan.BytesToDownload);
-                var copied = Interlocked.Add(ref copiedBytes, filePlan.BytesToCopy);
+                var elapsed = DateTime.UtcNow - fileStart;
 
                 progress?.Report(new PatchEngineProgress(
                     PatchEnginePhase.Assembling,
                     completed, totalFiles,
-                    bytes, totalBytes,
-                    downloaded, copied,
-                    $"Assembled: {filePlan.ManifestFile.Path}"));
+                    Interlocked.Read(ref downloadedBytes) + Interlocked.Read(ref copiedBytes), totalBytes,
+                    Interlocked.Read(ref downloadedBytes), Interlocked.Read(ref copiedBytes),
+                    $"Completed: {fileName} ({elapsed.TotalSeconds:F1}s)"));
             });
 
         return results.ToList();
     }
 
-    private async Task AssembleFileAsync(FilePlan plan, CancellationToken cancellationToken)
+    private async Task AssembleFileAsync(FilePlan plan, IProgress<FileAssemblyProgress>? fileProgress, CancellationToken cancellationToken)
     {
         // Ensure directory exists
         var dir = Path.GetDirectoryName(plan.TempPath);
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
+        var totalBytes = plan.BytesToDownload + plan.BytesToCopy;
+        var lastDownloaded = 0L;
+        var lastCopied = 0L;
+
         switch (plan.Method)
         {
             case DownloadMethod.Delta when plan.DeltaPlan != null:
+                // Create progress adapter for file assembler
+                var deltaProgress = fileProgress != null
+                    ? new Progress<AssemblyProgress>(p =>
+                    {
+                        var downloadDelta = p.BytesDownloaded - lastDownloaded;
+                        var copyDelta = p.BytesCopied - lastCopied;
+                        lastDownloaded = p.BytesDownloaded;
+                        lastCopied = p.BytesCopied;
+
+                        fileProgress.Report(new FileAssemblyProgress(
+                            p.BytesDownloaded + p.BytesCopied,
+                            totalBytes,
+                            downloadDelta,
+                            copyDelta));
+                    })
+                    : null;
+
                 await _assembler.AssembleAsync(
                     plan.LocalPath,  // Target path (assembler writes to .pstmp internally)
                     plan.ManifestFile.Path,
                     plan.DeltaPlan,
                     plan.ManifestFile.Hash,
-                    progress: null,
+                    deltaProgress,
                     cancellationToken);
                 break;
 
             case DownloadMethod.VirtualDelta when plan.VirtualDeltaPlan != null:
+                // Create progress adapter for container assembler
+                var containerProgress = fileProgress != null
+                    ? new Progress<ContainerAssemblyProgress>(p =>
+                    {
+                        var downloadDelta = p.BytesDownloaded - lastDownloaded;
+                        var copyDelta = p.BytesCopied - lastCopied;
+                        lastDownloaded = p.BytesDownloaded;
+                        lastCopied = p.BytesCopied;
+
+                        fileProgress.Report(new FileAssemblyProgress(
+                            p.BytesComplete,
+                            p.BytesTotal,
+                            downloadDelta,
+                            copyDelta));
+                    })
+                    : null;
+
                 await _containerAssembler.AssembleAsync(
                     plan.TempPath,  // Write directly to temp path
                     plan.ManifestFile.FileUrl ?? $"files/{plan.ManifestFile.Path}",
                     plan.VirtualDeltaPlan,
                     plan.LocalPath,  // Local container path for copying entries
-                    progress: null,
+                    containerProgress,
                     cancellationToken);
                 break;
 
             case DownloadMethod.Compressed:
-                await DownloadCompressedAsync(plan, cancellationToken);
+                await DownloadCompressedAsync(plan, fileProgress, cancellationToken);
                 break;
 
             case DownloadMethod.Full:
             default:
-                await DownloadFullAsync(plan, cancellationToken);
+                await DownloadFullAsync(plan, fileProgress, cancellationToken);
                 break;
         }
     }
 
-    private async Task DownloadFullAsync(FilePlan plan, CancellationToken cancellationToken)
+    private async Task DownloadFullAsync(FilePlan plan, IProgress<FileAssemblyProgress>? progress, CancellationToken cancellationToken)
     {
         await using var remoteStream = await _storage.GetAsync(plan.ManifestFile.Path, cancellationToken);
         await using var fileStream = new FileStream(
@@ -404,17 +478,32 @@ public sealed class PatchEngine : IDisposable
             bufferSize: 81920,
             FileOptions.Asynchronous);
 
-        await remoteStream.CopyToAsync(fileStream, cancellationToken);
+        var buffer = new byte[81920];
+        var totalBytes = plan.ManifestFile.Size;
+        var bytesWritten = 0L;
+        int bytesRead;
+
+        while ((bytesRead = await remoteStream.ReadAsync(buffer, cancellationToken)) > 0)
+        {
+            await fileStream.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+            bytesWritten += bytesRead;
+
+            progress?.Report(new FileAssemblyProgress(
+                bytesWritten,
+                totalBytes,
+                bytesRead,
+                0));
+        }
     }
 
-    private async Task DownloadCompressedAsync(FilePlan plan, CancellationToken cancellationToken)
+    private async Task DownloadCompressedAsync(FilePlan plan, IProgress<FileAssemblyProgress>? progress, CancellationToken cancellationToken)
     {
         // TODO: Implement Zstandard decompression when ready
         // For now, fall back to full download
         var compressedPath = plan.ManifestFile.CompressedUrl ?? $"compressed/{plan.ManifestFile.Path}.zst";
 
         // Placeholder: just download full for now
-        await DownloadFullAsync(plan, cancellationToken);
+        await DownloadFullAsync(plan, progress, cancellationToken);
     }
 
     #endregion
@@ -784,7 +873,19 @@ internal sealed class FilePlan
 /// <summary>
 /// Internal: Result of assembling a single file.
 /// </summary>
-internal readonly record struct AssemblyResult(FilePlan Plan, bool Success, string? Error);
+internal readonly record struct AssemblyResult(FilePlan Plan, bool Success, string? Error, TimeSpan? Elapsed = null);
+
+/// <summary>
+/// Progress for a single file during assembly (used for aggregating per-file progress).
+/// </summary>
+internal readonly record struct FileAssemblyProgress(
+    long BytesComplete,
+    long BytesTotal,
+    long BytesDownloadedDelta,
+    long BytesCopiedDelta)
+{
+    public double Percentage => BytesTotal > 0 ? (double)BytesComplete / BytesTotal : 0;
+}
 
 /// <summary>
 /// Internal: Result of commit phase.

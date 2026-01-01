@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using PatchSync.Common.Hashing;
 using PatchSync.Common.Storage;
 using PatchSync.SDK.Delta;
+using PatchSync.SDK.Storage;
 
 namespace PatchSync.SDK.Assembly;
 
@@ -12,11 +13,18 @@ public sealed class FileAssembler
 {
     private readonly IStorageProvider _storage;
     private readonly AssemblyOptions _options;
+    private readonly RangeDownloader _rangeDownloader;
 
     public FileAssembler(IStorageProvider storage, AssemblyOptions? options = null)
     {
         _storage = storage ?? throw new ArgumentNullException(nameof(storage));
         _options = options ?? new AssemblyOptions();
+        _rangeDownloader = new RangeDownloader(storage, new RangeDownloaderOptions
+        {
+            MaxConcurrency = _options.MaxConcurrency,
+            BufferSize = _options.BufferSize,
+            MaxCoalesceGap = _options.MaxCoalesceGap
+        });
     }
 
     /// <summary>
@@ -50,7 +58,7 @@ public sealed class FileAssembler
                 FileMode.Create,
                 FileAccess.ReadWrite,
                 FileShare.None,
-                bufferSize: 81920,
+                bufferSize: _options.BufferSize,
                 FileOptions.Asynchronous);
 
             // Pre-allocate file size for better performance
@@ -62,21 +70,25 @@ public sealed class FileAssembler
 
             var progressState = new AssemblyProgressState(plan, progress);
 
-            // Process actions in order (they're already sorted by target offset)
-            foreach (var action in plan.Actions)
+            // Phase 1: Batch download all remote chunks using coalesced ranges
+            var downloadRanges = plan.GetDownloadRanges(_options.MaxCoalesceGap);
+            if (downloadRanges.Count > 0)
+            {
+                var downloadProgress = new Progress<RangeDownloadProgress>(p =>
+                {
+                    progressState.SetDownloadProgress(p.BytesDownloaded, p.BytesDelta);
+                });
+
+                await _rangeDownloader.DownloadRangesToStreamAsync(
+                    remotePath, downloadRanges, targetStream, downloadProgress, cancellationToken);
+            }
+
+            // Phase 2: Copy local chunks
+            var localChunks = plan.Actions.OfType<CopyLocal>();
+            foreach (var chunk in localChunks)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-
-                switch (action)
-                {
-                    case CopyLocal copyLocal:
-                        await CopyLocalChunkAsync(targetStream, copyLocal, progressState, cancellationToken);
-                        break;
-
-                    case DownloadRemote downloadRemote:
-                        await DownloadChunkAsync(targetStream, remotePath, downloadRemote, progressState, cancellationToken);
-                        break;
-                }
+                await CopyLocalChunkAsync(targetStream, chunk, progressState, cancellationToken);
             }
 
             // Verify final hash
@@ -142,35 +154,6 @@ public sealed class FileAssembler
         }
     }
 
-    private async Task DownloadChunkAsync(
-        FileStream target,
-        string remotePath,
-        DownloadRemote action,
-        AssemblyProgressState progress,
-        CancellationToken cancellationToken)
-    {
-        target.Position = action.TargetOffset;
-
-        await using var remoteStream = await _storage.GetRangeAsync(
-            remotePath, action.TargetOffset, action.Length, cancellationToken);
-
-        var buffer = new byte[Math.Min(action.Length, 81920)];
-        int remaining = action.Length;
-
-        while (remaining > 0)
-        {
-            int toRead = Math.Min(remaining, buffer.Length);
-            int bytesRead = await remoteStream.ReadAsync(buffer.AsMemory(0, toRead), cancellationToken);
-
-            if (bytesRead == 0)
-                throw new EndOfStreamException($"Unexpected end of remote stream at offset {action.TargetOffset}");
-
-            await target.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
-            remaining -= bytesRead;
-            progress.AddBytesDownloaded(bytesRead);
-        }
-    }
-
     private static async Task<string> ComputeHashAsync(Stream stream, CancellationToken cancellationToken)
     {
         var hash = await SHA256.HashDataAsync(stream, cancellationToken);
@@ -192,9 +175,9 @@ public sealed class FileAssembler
             _stopwatch = System.Diagnostics.Stopwatch.StartNew();
         }
 
-        public void AddBytesDownloaded(int bytes)
+        public void SetDownloadProgress(long totalDownloaded, long delta)
         {
-            _bytesDownloaded += bytes;
+            _bytesDownloaded = totalDownloaded;
             Report();
         }
 
@@ -240,7 +223,7 @@ public sealed class FileAssembler
 public sealed class AssemblyOptions
 {
     /// <summary>
-    /// Maximum concurrent downloads (not yet implemented - reserved for future).
+    /// Maximum concurrent range downloads.
     /// </summary>
     public int MaxConcurrency { get; init; } = 4;
 
@@ -253,6 +236,14 @@ public sealed class AssemblyOptions
     /// Buffer size for copy operations.
     /// </summary>
     public int BufferSize { get; init; } = 81920;
+
+    /// <summary>
+    /// Maximum gap between byte ranges to merge into a single download.
+    /// Larger values reduce HTTP requests at the cost of downloading extra bytes.
+    /// Default: 64KB - good balance for typical internet connections (10+ Mbps).
+    /// For local/high-speed connections, consider 256KB-1MB.
+    /// </summary>
+    public int MaxCoalesceGap { get; init; } = 65536; // 64KB
 }
 
 /// <summary>

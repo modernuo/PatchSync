@@ -405,14 +405,19 @@ public sealed class ScanResult
     /// <summary>
     /// Gets a breakdown of files by update strategy, with estimated download bytes.
     /// </summary>
+    /// <param name="coalesceGap">Maximum gap between ranges to merge (default 64KB).</param>
+    /// <param name="avgChunkSize">Average CDC chunk size for estimating range count (default 64KB).</param>
     /// <remarks>
     /// Estimates are based on typical delta ratios:
     /// - Delta: ~20% of file size for existing files, 100% for missing
     /// - VirtualDelta: ~10% of file size for existing files, 100% for missing
     /// - HashCheck/AlwaysCompressed: 100% of file size
+    ///
+    /// Includes estimated overhead from range coalescing (downloading gap bytes
+    /// between adjacent ranges to reduce HTTP request count).
     /// Actual savings depend on file content and local file state.
     /// </remarks>
-    public ScanStrategyBreakdown GetStrategyBreakdown()
+    public ScanStrategyBreakdown GetStrategyBreakdown(int coalesceGap = 65536, int avgChunkSize = 65536)
     {
         var allFiles = NeedsUpdate.Concat(Missing).ToList();
 
@@ -425,30 +430,79 @@ public sealed class ScanResult
 
         // Estimate delta savings: existing files can use delta, missing files need full download
         long deltaWorstCase = deltaFiles.Sum(f => f.Size);
-        long deltaEstimated = deltaFiles.Sum(f =>
+        long deltaRawEstimated = deltaFiles.Sum(f =>
             f.Status == FileStatusType.NeedsUpdate
                 ? (long)(f.Size * 0.20) // ~20% for updates
                 : f.Size);              // 100% for missing
 
         long virtualDeltaWorstCase = virtualDeltaFiles.Sum(f => f.Size);
-        long virtualDeltaEstimated = virtualDeltaFiles.Sum(f =>
+        long virtualDeltaRawEstimated = virtualDeltaFiles.Sum(f =>
             f.Status == FileStatusType.NeedsUpdate
                 ? (long)(f.Size * 0.10) // ~10% for container updates
                 : f.Size);              // 100% for missing
 
+        // Estimate coalescing overhead
+        // For each file, estimate the number of separate download ranges
+        // Overhead = (ranges - 1) * coalesceGap per file
+        long deltaCoalesceOverhead = EstimateCoalesceOverhead(
+            deltaFiles.Where(f => f.Status == FileStatusType.NeedsUpdate),
+            0.20, coalesceGap, avgChunkSize);
+
+        long virtualDeltaCoalesceOverhead = EstimateCoalesceOverhead(
+            virtualDeltaFiles.Where(f => f.Status == FileStatusType.NeedsUpdate),
+            0.10, coalesceGap, avgChunkSize);
+
+        long deltaEstimated = deltaRawEstimated + deltaCoalesceOverhead;
+        long virtualDeltaEstimated = virtualDeltaRawEstimated + virtualDeltaCoalesceOverhead;
         long fullDownloadTotal = fullDownloadFiles.Sum(f => f.Size);
 
         return new ScanStrategyBreakdown(
             DeltaFileCount: deltaFiles.Count,
             DeltaWorstCaseBytes: deltaWorstCase,
             DeltaEstimatedBytes: deltaEstimated,
+            DeltaCoalesceOverhead: deltaCoalesceOverhead,
             VirtualDeltaFileCount: virtualDeltaFiles.Count,
             VirtualDeltaWorstCaseBytes: virtualDeltaWorstCase,
             VirtualDeltaEstimatedBytes: virtualDeltaEstimated,
+            VirtualDeltaCoalesceOverhead: virtualDeltaCoalesceOverhead,
             FullDownloadFileCount: fullDownloadFiles.Count,
             FullDownloadBytes: fullDownloadTotal,
             TotalWorstCaseBytes: BytesToDownload,
-            TotalEstimatedBytes: deltaEstimated + virtualDeltaEstimated + fullDownloadTotal);
+            TotalEstimatedBytes: deltaEstimated + virtualDeltaEstimated + fullDownloadTotal,
+            TotalCoalesceOverhead: deltaCoalesceOverhead + virtualDeltaCoalesceOverhead);
+    }
+
+    /// <summary>
+    /// Estimates the coalescing overhead for a set of files.
+    /// </summary>
+    private static long EstimateCoalesceOverhead(
+        IEnumerable<FileStatus> files,
+        double downloadRatio,
+        int coalesceGap,
+        int avgChunkSize)
+    {
+        long totalOverhead = 0;
+
+        foreach (var file in files)
+        {
+            // Estimate download bytes for this file
+            var downloadBytes = (long)(file.Size * downloadRatio);
+
+            // Estimate number of chunks to download
+            var chunksToDownload = Math.Max(1, downloadBytes / avgChunkSize);
+
+            // Estimate number of separate ranges (chunks often adjacent, so divide by ~4)
+            var estimatedRanges = Math.Max(1, chunksToDownload / 4);
+
+            // Overhead = (ranges - 1) * gap, but cap at reasonable percentage of download
+            var overhead = Math.Min(
+                (estimatedRanges - 1) * coalesceGap,
+                downloadBytes / 2); // Cap at 50% of download size
+
+            totalOverhead += overhead;
+        }
+
+        return totalOverhead;
     }
 }
 
@@ -459,13 +513,16 @@ public readonly record struct ScanStrategyBreakdown(
     int DeltaFileCount,
     long DeltaWorstCaseBytes,
     long DeltaEstimatedBytes,
+    long DeltaCoalesceOverhead,
     int VirtualDeltaFileCount,
     long VirtualDeltaWorstCaseBytes,
     long VirtualDeltaEstimatedBytes,
+    long VirtualDeltaCoalesceOverhead,
     int FullDownloadFileCount,
     long FullDownloadBytes,
     long TotalWorstCaseBytes,
-    long TotalEstimatedBytes)
+    long TotalEstimatedBytes,
+    long TotalCoalesceOverhead)
 {
     /// <summary>
     /// Estimated savings from delta patching.
@@ -478,6 +535,11 @@ public readonly record struct ScanStrategyBreakdown(
     public double SavingsPercentage => TotalWorstCaseBytes > 0
         ? (double)EstimatedSavings / TotalWorstCaseBytes
         : 0;
+
+    /// <summary>
+    /// Estimated download without coalescing overhead.
+    /// </summary>
+    public long EstimatedWithoutOverhead => TotalEstimatedBytes - TotalCoalesceOverhead;
 }
 
 /// <summary>
