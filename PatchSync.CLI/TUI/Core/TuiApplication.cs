@@ -1,4 +1,7 @@
 using System.Threading.Channels;
+using PatchSync.CLI.Build;
+using PatchSync.CLI.Commands;
+using PatchSync.CLI.TUI.Integration;
 using PatchSync.CLI.Workspace;
 using PatchSync.Common.Manifest;
 using Spectre.Console;
@@ -16,6 +19,9 @@ public sealed class TuiApplication : IDisposable
     private readonly TuiRenderer _renderer;
     private readonly CancellationTokenSource _cts;
     private readonly Channel<ITuiMessage> _messageChannel;
+    private readonly TuiBuildService _buildService;
+    private readonly TuiPublishService _publishService;
+    private readonly WizardOverlay _wizardOverlay;
 
     private TuiState _state;
     private bool _disposed;
@@ -31,6 +37,9 @@ public sealed class TuiApplication : IDisposable
             SingleReader = true,
             SingleWriter = false
         });
+        _buildService = new TuiBuildService(this, workspace);
+        _publishService = new TuiPublishService(this, workspace);
+        _wizardOverlay = new WizardOverlay(this);
 
         _state = TuiState.CreateFromWorkspace(workspace);
     }
@@ -42,6 +51,9 @@ public sealed class TuiApplication : IDisposable
     {
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
         var token = linkedCts.Token;
+
+        // Load versions for the default channel
+        await LoadChannelVersionsAsync(_state.Workspace.CurrentChannel, token);
 
         // Initial file list load
         await LoadFilesAsync(token);
@@ -185,7 +197,7 @@ public sealed class TuiApplication : IDisposable
 
             // Wizard
             LaunchCdnSetupWizard => await HandleLaunchCdnSetupWizardAsync(state, token),
-            WizardCompleted => HandleWizardCompleted(state),
+            WizardCompleted => await HandleWizardCompletedAsync(state, token),
             WizardCancelled => HandleWizardCancelled(state),
 
             // Application lifecycle
@@ -213,6 +225,7 @@ public sealed class TuiApplication : IDisposable
 
             // Publish messages
             StartPublish => await HandleStartPublishAsync(state, token),
+            ConfirmPublish => await HandleConfirmPublishAsync(state, token),
             CancelPublish => HandleCancelPublish(state),
             PublishProgress(var uploadedFiles, var totalFiles, var uploadedBytes, var totalBytes, var currentFile) =>
                 HandlePublishProgress(state, uploadedFiles, totalFiles, uploadedBytes, totalBytes, currentFile),
@@ -532,13 +545,69 @@ public sealed class TuiApplication : IDisposable
 
     private async Task<TuiState> HandleChangeStrategyAsync(TuiState state, Common.Manifest.UpdateStrategy strategy, CancellationToken token)
     {
-        // TODO: Integrate with FileOperationsService to persist change
-        return state with
+        var channel = state.Workspace.CurrentChannel;
+        var version = state.Workspace.CurrentVersion;
+
+        if (string.IsNullOrEmpty(channel) || string.IsNullOrEmpty(version))
         {
+            return state with
+            {
+                Status = new StatusMessage
+                {
+                    Text = "No channel or version selected",
+                    Type = StatusType.Error,
+                    Duration = TimeSpan.FromSeconds(3)
+                }
+            };
+        }
+
+        // Get selected files
+        var paths = state.FileList.IsMultiSelect
+            ? state.FileList.SelectedPaths.ToList()
+            : state.FileList.SelectedFile != null
+                ? [state.FileList.SelectedFile.Path]
+                : [];
+
+        if (paths.Count == 0)
+        {
+            return state with
+            {
+                Status = new StatusMessage
+                {
+                    Text = "No file selected",
+                    Type = StatusType.Warning,
+                    Duration = TimeSpan.FromSeconds(2)
+                }
+            };
+        }
+
+        var fileOps = new FileOperationsService(_workspace);
+        var successCount = 0;
+        var failCount = 0;
+
+        foreach (var path in paths)
+        {
+            var result = await fileOps.SetStrategyAsync(channel, version, path, strategy, null, token);
+            if (result.Success)
+                successCount++;
+            else
+                failCount++;
+        }
+
+        // Reload files to reflect changes
+        await LoadFilesAsync(token);
+
+        var message = failCount > 0
+            ? $"Changed {successCount} file(s), {failCount} failed"
+            : $"Changed strategy to {strategy} for {successCount} file(s)";
+
+        return _state with
+        {
+            Dialog = null,
             Status = new StatusMessage
             {
-                Text = $"Changed strategy to {strategy}",
-                Type = StatusType.Success,
+                Text = message,
+                Type = failCount > 0 ? StatusType.Warning : StatusType.Success,
                 Duration = TimeSpan.FromSeconds(2)
             }
         };
@@ -546,6 +615,22 @@ public sealed class TuiApplication : IDisposable
 
     private async Task<TuiState> HandleRemoveFilesAsync(TuiState state, CancellationToken token)
     {
+        var channel = state.Workspace.CurrentChannel;
+        var version = state.Workspace.CurrentVersion;
+
+        if (string.IsNullOrEmpty(channel) || string.IsNullOrEmpty(version))
+        {
+            return state with
+            {
+                Status = new StatusMessage
+                {
+                    Text = "No channel or version selected",
+                    Type = StatusType.Error,
+                    Duration = TimeSpan.FromSeconds(3)
+                }
+            };
+        }
+
         var paths = state.FileList.IsMultiSelect
             ? state.FileList.SelectedPaths.ToList()
             : state.FileList.SelectedFile != null
@@ -554,6 +639,46 @@ public sealed class TuiApplication : IDisposable
 
         if (paths.Count == 0) return state;
 
+        // If dialog is already showing, this is a confirmation - perform the removal
+        if (state.Dialog?.Type == DialogType.Confirm && state.Dialog?.Title == "Remove Files")
+        {
+            var fileOps = new FileOperationsService(_workspace);
+            var successCount = 0;
+            var failCount = 0;
+
+            foreach (var path in paths)
+            {
+                var result = await fileOps.RemoveFileAsync(channel, version, path, true, token);
+                if (result.Success)
+                    successCount++;
+                else
+                    failCount++;
+            }
+
+            // Reload files to reflect changes
+            await LoadFilesAsync(token);
+
+            var message = failCount > 0
+                ? $"Removed {successCount} file(s), {failCount} failed"
+                : $"Removed {successCount} file(s)";
+
+            return _state with
+            {
+                Dialog = null,
+                FileList = _state.FileList with
+                {
+                    SelectedPaths = new HashSet<string>()
+                },
+                Status = new StatusMessage
+                {
+                    Text = message,
+                    Type = failCount > 0 ? StatusType.Warning : StatusType.Success,
+                    Duration = TimeSpan.FromSeconds(2)
+                }
+            };
+        }
+
+        // Show confirmation dialog
         return state with
         {
             Dialog = new DialogState
@@ -621,19 +746,8 @@ public sealed class TuiApplication : IDisposable
 
     private async Task<TuiState> HandleSwitchChannelAsync(TuiState state, string channelId, CancellationToken token)
     {
-        // Load versions for this channel
-        var versionsPath = Path.Combine(_workspace.WorkspacePath, ".patchsync", "channels", channelId);
-        var versions = new List<string>();
-
-        if (Directory.Exists(versionsPath))
-        {
-            versions = Directory.GetDirectories(versionsPath)
-                .Select(Path.GetFileName)
-                .Where(v => v != null)
-                .Cast<string>()
-                .OrderByDescending(v => v)
-                .ToList();
-        }
+        // Load versions for this channel using WorkspaceManager
+        var versions = _workspace.GetVersions(channelId).ToList();
 
         return state with
         {
@@ -795,32 +909,41 @@ public sealed class TuiApplication : IDisposable
     private async Task<TuiState> HandleLaunchCdnSetupWizardAsync(TuiState state, CancellationToken token)
     {
         // Mark wizard as active so input handling is paused
-        state = state with { IsWizardActive = true };
+        _state = state with { IsWizardActive = true };
 
-        // TODO: Run CdnSetupWizard here
-        // For now, just show a message
-        await Task.Delay(100, token);
-
-        return state with
+        // Run the CDN setup wizard through the overlay
+        // The wizard uses Spectre.Console prompts, so the overlay clears the screen,
+        // runs the wizard, then clears again before resuming the TUI
+        _ = Task.Run(async () =>
         {
-            IsWizardActive = false,
-            Status = new StatusMessage
+            await _wizardOverlay.RunWizardAsync(async ct =>
             {
-                Text = "CDN wizard would launch here",
-                Type = StatusType.Info,
-                Duration = TimeSpan.FromSeconds(3)
-            }
-        };
+                var result = await CdnSetupWizard.RunWizardAsync(_workspace);
+                return result == 0; // 0 = success
+            }, token);
+        }, token);
+
+        return _state;
     }
 
-    private static TuiState HandleWizardCompleted(TuiState state)
+    private async Task<TuiState> HandleWizardCompletedAsync(TuiState state, CancellationToken token)
     {
+        // Reload workspace config to pick up new publish profiles
+        await _workspace.LoadConfigAsync(token);
+
+        // Update state to reflect new config
+        var hasPublishProfiles = _workspace.Config?.PublishProfiles.Count > 0;
+
         return state with
         {
             IsWizardActive = false,
+            Workspace = state.Workspace with
+            {
+                HasPublishProfiles = hasPublishProfiles
+            },
             Status = new StatusMessage
             {
-                Text = "Configuration saved",
+                Text = "CDN configuration saved",
                 Type = StatusType.Success,
                 Duration = TimeSpan.FromSeconds(3)
             }
@@ -856,10 +979,26 @@ public sealed class TuiApplication : IDisposable
 
     #region Build Handlers
 
-    private async Task<TuiState> HandleStartBuildAsync(TuiState state, string inputPath, string? baseVersion, CancellationToken token)
+    private Task<TuiState> HandleStartBuildAsync(TuiState state, string inputPath, string? baseVersion, CancellationToken token)
     {
+        var channel = state.Workspace.CurrentChannel;
+        var version = state.Workspace.CurrentVersion;
+
+        if (string.IsNullOrEmpty(channel) || string.IsNullOrEmpty(version))
+        {
+            return Task.FromResult(state with
+            {
+                Status = new StatusMessage
+                {
+                    Text = "No channel or version selected",
+                    Type = StatusType.Error,
+                    Duration = TimeSpan.FromSeconds(3)
+                }
+            });
+        }
+
         // Navigate to build screen and start build
-        state = state with
+        var newState = state with
         {
             CurrentScreen = TuiScreen.Build,
             ScreenHistory = state.ScreenHistory.Append(state.CurrentScreen).ToList(),
@@ -871,13 +1010,16 @@ public sealed class TuiApplication : IDisposable
             }
         };
 
-        // TODO: Integrate with ParallelSignatureBuilder
-        return state;
+        // Start build on background task
+        _buildService.StartBuild(channel, version, inputPath, baseVersion);
+
+        return Task.FromResult(newState);
     }
 
-    private static TuiState HandleCancelBuild(TuiState state)
+    private TuiState HandleCancelBuild(TuiState state)
     {
-        // TODO: Actually cancel the build operation
+        _buildService.CancelBuild();
+
         return state with
         {
             Build = state.Build with
@@ -937,9 +1079,40 @@ public sealed class TuiApplication : IDisposable
 
     #region Publish Handlers
 
-    private async Task<TuiState> HandleStartPublishAsync(TuiState state, CancellationToken token)
+    private Task<TuiState> HandleStartPublishAsync(TuiState state, CancellationToken token)
     {
-        state = state with
+        var channel = state.Workspace.CurrentChannel;
+        var version = state.Workspace.CurrentVersion;
+
+        if (string.IsNullOrEmpty(channel) || string.IsNullOrEmpty(version))
+        {
+            return Task.FromResult(state with
+            {
+                Status = new StatusMessage
+                {
+                    Text = "No channel or version selected",
+                    Type = StatusType.Error,
+                    Duration = TimeSpan.FromSeconds(3)
+                }
+            });
+        }
+
+        // Check if publish profile is configured
+        if (!state.Workspace.HasPublishProfiles)
+        {
+            return Task.FromResult(state with
+            {
+                Status = new StatusMessage
+                {
+                    Text = "No publish profile configured. Run CDN setup first.",
+                    Type = StatusType.Warning,
+                    Duration = TimeSpan.FromSeconds(3)
+                }
+            });
+        }
+
+        // Navigate to publish screen in confirmation mode
+        return Task.FromResult(state with
         {
             CurrentScreen = TuiScreen.Publish,
             ScreenHistory = state.ScreenHistory.Append(state.CurrentScreen).ToList(),
@@ -949,13 +1122,45 @@ public sealed class TuiApplication : IDisposable
                 TotalFiles = state.FileList.AllFiles.Count,
                 TotalBytes = state.FileList.AllFiles.Sum(f => f.Size)
             }
-        };
-
-        return state;
+        });
     }
 
-    private static TuiState HandleCancelPublish(TuiState state)
+    private Task<TuiState> HandleConfirmPublishAsync(TuiState state, CancellationToken token)
     {
+        var channel = state.Workspace.CurrentChannel;
+        var version = state.Workspace.CurrentVersion;
+
+        if (string.IsNullOrEmpty(channel) || string.IsNullOrEmpty(version))
+        {
+            return Task.FromResult(state with
+            {
+                Status = new StatusMessage
+                {
+                    Text = "No channel or version selected",
+                    Type = StatusType.Error,
+                    Duration = TimeSpan.FromSeconds(3)
+                }
+            });
+        }
+
+        // Start the actual publish
+        _publishService.StartPublish(channel, version);
+
+        return Task.FromResult(state with
+        {
+            Publish = state.Publish with
+            {
+                IsConfirming = false,
+                IsPublishing = true,
+                StartTime = DateTime.UtcNow
+            }
+        });
+    }
+
+    private TuiState HandleCancelPublish(TuiState state)
+    {
+        _publishService.CancelPublish();
+
         return state with
         {
             Publish = new PublishState()
@@ -1013,6 +1218,32 @@ public sealed class TuiApplication : IDisposable
 
     #region Data Loading
 
+    /// <summary>
+    /// Load versions for a channel and update state.
+    /// </summary>
+    private Task LoadChannelVersionsAsync(string channelId, CancellationToken token)
+    {
+        if (string.IsNullOrEmpty(channelId))
+        {
+            return Task.CompletedTask;
+        }
+
+        // Get versions from workspace manager
+        var versions = _workspace.GetVersions(channelId).ToList();
+        var latestVersion = versions.FirstOrDefault();
+
+        _state = _state with
+        {
+            Workspace = _state.Workspace with
+            {
+                Versions = versions,
+                CurrentVersion = latestVersion
+            }
+        };
+
+        return Task.CompletedTask;
+    }
+
     private async Task LoadFilesAsync(CancellationToken token)
     {
         try
@@ -1029,13 +1260,8 @@ public sealed class TuiApplication : IDisposable
                 return;
             }
 
-            var manifestPath = Path.Combine(
-                _workspace.WorkspacePath,
-                ".patchsync",
-                "channels",
-                channel,
-                version,
-                "manifest.json");
+            // Use WorkspaceManager path resolution
+            var manifestPath = _workspace.GetManifestPath(channel, version);
 
             if (!File.Exists(manifestPath))
             {
@@ -1061,6 +1287,9 @@ public sealed class TuiApplication : IDisposable
                 return;
             }
 
+            // Load version metadata for override info
+            var metadata = await _workspace.LoadVersionMetadataAsync(channel, version, token);
+
             var files = manifest.Files
                 .Select(f => new FileListItem
                 {
@@ -1068,6 +1297,7 @@ public sealed class TuiApplication : IDisposable
                     Size = f.Size,
                     Hash = f.Hash,
                     Strategy = f.Strategy,
+                    IsOverride = f.IsStrategyOverride,
                     BaseHash = f.BaseHash
                 })
                 .OrderBy(f => f.Path)
@@ -1080,6 +1310,10 @@ public sealed class TuiApplication : IDisposable
                     AllFiles = files,
                     FilteredFiles = files,
                     VisibleCount = _state.Terminal.MaxVisibleFiles
+                },
+                Workspace = _state.Workspace with
+                {
+                    CurrentMetadata = metadata
                 }
             };
         }

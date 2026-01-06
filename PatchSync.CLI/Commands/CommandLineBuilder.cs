@@ -39,6 +39,7 @@ public static class CliBuilder
         rootCommand.Add(BuildFilesCommand());
         rootCommand.Add(BuildPromoteCommand());
         rootCommand.Add(BuildCdnCommand());
+        rootCommand.Add(BuildTuiCommand());
 #if FONT_PREVIEW
         rootCommand.Add(BuildFontsCommand());
 #endif
@@ -698,6 +699,26 @@ public static class CliBuilder
             if (force) args.Add("--force");
 
             return await PromoteCommand.RunAsync(args.ToArray());
+        });
+
+        return command;
+    }
+
+    #endregion
+
+    #region TUI Command
+
+    private static Command BuildTuiCommand()
+    {
+        var command = new Command("tui", "Launch the full terminal user interface")
+        {
+            WorkspaceOption
+        };
+
+        command.SetAction(async (parseResult, cancellationToken) =>
+        {
+            var workspace = parseResult.GetValue(WorkspaceOption);
+            return await TuiCommand.RunAsync(workspace, cancellationToken);
         });
 
         return command;
